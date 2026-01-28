@@ -1,0 +1,19 @@
+{
+  "name": "env-guard",
+  "version": "1.0.0",
+  "description": "Agent hook that prevents .env secrets from being surfaced in conversations",
+  "author": "mz",
+  "license": "MIT",
+  "scripts": {
+    "install-hooks": "node install.js",
+    "uninstall-hooks": "node install.js --uninstall",
+    "test": "node test.js"
+  },
+  "files": [
+    "env-guard.js",
+    "env-write.js",
+    "install.js",
+    "README.md"
+  ],
+  "keywords": ["claude-code", "hooks", "env", "secrets", "security"]
+}
