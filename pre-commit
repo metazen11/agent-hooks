@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook for code quality review
+#
+# Ensures code:
+#   1. Conforms to simplest solution
+#   2. Follows security best practices
+#   3. Uses canonical naming conventions
+#   4. Has been verified to work
+#   5. Is clear, concise, and well-commented
+#
+
+set -e
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+info() { echo -e "${BLUE}[CHECK]${NC} $*"; }
+success() { echo -e "${GREEN}[PASS]${NC} $*"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
+fail() { echo -e "${RED}[FAIL]${NC} $*"; }
+
+echo ""
+echo "=========================================="
+echo "  Pre-Commit Code Quality Review"
+echo "=========================================="
+echo ""
+
+ERRORS=0
+WARNINGS=0
+
+# Get staged files
+STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true)
+STAGED_JS=$(git diff --cached --name-only --diff-filter=ACM | grep '\.js$' || true)
+STAGED_SH=$(git diff --cached --name-only --diff-filter=ACM | grep '\.sh$' || true)
+STAGED_ALL=$(git diff --cached --name-only --diff-filter=ACM)
+
+if [[ -z "$STAGED_ALL" ]]; then
+  echo "No staged files to check."
+  exit 0
+fi
+
+#######################################
+# 1. SIMPLICITY CHECK - No over-engineering
+#######################################
+info "Checking for over-engineering patterns..."
+
+for file in $STAGED_PY; do
+  if [[ -f "$file" ]]; then
+    # Check for excessive class inheritance depth
+    if grep -n "class.*(.*(.*(.*).*)):" "$file" 2>/dev/null; then
+      warn "Deep inheritance detected in $file - consider simplifying"
+      ((WARNINGS++))
+    fi
+
+    # Check for overly complex comprehensions
+    if grep -nE "\[.{80,}\]" "$file" 2>/dev/null; then
+      warn "Complex list comprehension in $file - consider breaking down"
+      ((WARNINGS++))
+    fi
+  fi
+done
+
+success "Simplicity check complete"
+
+#######################################
+# 2. SECURITY CHECK - OWASP patterns
+#######################################
+info "Checking for security vulnerabilities..."
+
+for file in $STAGED_PY; do
+  if [[ -f "$file" ]]; then
+    # SQL injection patterns
+    matches=$(grep -nE "(execute|raw|cursor).*(%s|%d|\"|'.*\+)" "$file" 2>/dev/null | grep -v "# nosec" | head -3)
+    if [[ -n "$matches" ]]; then
+      echo "$matches"
+      fail "Potential SQL injection in $file"
+      ((ERRORS++))
+    fi
+
+    # Command injection
+    matches=$(grep -nE "(os\.system|subprocess\.call|eval|exec)\s*\(" "$file" 2>/dev/null | grep -v "# nosec" | head -3)
+    if [[ -n "$matches" ]]; then
+      echo "$matches"
+      warn "Potential command injection risk in $file - verify input sanitization"
+      ((WARNINGS++))
+    fi
+
+    # Hardcoded secrets
+    matches=$(grep -niE "(password|secret|api_key|token)\s*=\s*['\"][^'\"]+['\"]" "$file" 2>/dev/null | grep -v "# nosec" | grep -v "example" | grep -v "placeholder" | head -3)
+    if [[ -n "$matches" ]]; then
+      echo "$matches"
+      fail "Potential hardcoded secret in $file"
+      ((ERRORS++))
+    fi
+  fi
+done
+
+for file in $STAGED_JS; do
+  if [[ -f "$file" ]]; then
+    # XSS patterns
+    matches=$(grep -nE "innerHTML\s*=" "$file" 2>/dev/null | head -3)
+    if [[ -n "$matches" ]]; then
+      echo "$matches"
+      warn "innerHTML usage in $file - verify XSS protection"
+      ((WARNINGS++))
+    fi
+
+    # eval usage
+    matches=$(grep -nE "\beval\s*\(" "$file" 2>/dev/null | head -3)
+    if [[ -n "$matches" ]]; then
+      echo "$matches"
+      fail "eval() usage in $file - security risk"
+      ((ERRORS++))
+    fi
+  fi
+done
+
+success "Security check complete"
+
+#######################################
+# 3. NAMING CONVENTIONS
+#######################################
+info "Checking naming conventions..."
+
+for file in $STAGED_PY; do
+  if [[ -f "$file" ]]; then
+    # Check for non-snake_case function names (excluding class methods starting with __)
+    matches=$(grep -nE "^def [a-z]+[A-Z]" "$file" 2>/dev/null | head -3)
+    if [[ -n "$matches" ]]; then
+      echo "$matches"
+      warn "Non-snake_case function name in $file"
+      ((WARNINGS++))
+    fi
+
+    # Check for non-PascalCase class names
+    matches=$(grep -nE "^class [a-z]" "$file" 2>/dev/null | head -3)
+    if [[ -n "$matches" ]]; then
+      echo "$matches"
+      warn "Non-PascalCase class name in $file"
+      ((WARNINGS++))
+    fi
+
+    # Check for single-letter variable names (except i, j, k, x, y, z in loops)
+    matches=$(grep -nE "^\s+[a-hln-wA-Z]\s*=" "$file" 2>/dev/null | grep -v "for " | grep -v "# ok" | head -3)
+    if [[ -n "$matches" ]]; then
+      echo "$matches"
+      warn "Single-letter variable name in $file - consider descriptive names"
+      ((WARNINGS++))
+    fi
+  fi
+done
+
+for file in $STAGED_JS; do
+  if [[ -f "$file" ]]; then
+    # Check for non-camelCase function names
+    matches=$(grep -nE "function [a-z]+_[a-z]+" "$file" 2>/dev/null | head -3)
+    if [[ -n "$matches" ]]; then
+      echo "$matches"
+      warn "Non-camelCase function name in $file"
+      ((WARNINGS++))
+    fi
+  fi
+done
+
+success "Naming conventions check complete"
+
+#######################################
+# 4. VERIFICATION - Run tests if available
+#######################################
+info "Checking for test verification..."
+
+# Check if pytest is available and tests exist
+if command -v pytest >/dev/null 2>&1; then
+  if [[ -d "tests" ]]; then
+    # Run quick tests for changed files only
+    TEST_FILES=""
+    for file in $STAGED_PY; do
+      base=$(basename "$file" .py)
+      if [[ -f "tests/test_${base}.py" ]]; then
+        TEST_FILES="$TEST_FILES tests/test_${base}.py"
+      fi
+    done
+
+    if [[ -n "$TEST_FILES" ]]; then
+      info "Running related tests..."
+      if ! pytest $TEST_FILES -q --tb=no 2>/dev/null; then
+        fail "Tests failed - fix before committing"
+        ((ERRORS++))
+      else
+        success "Related tests passed"
+      fi
+    else
+      warn "No related tests found for changed files"
+    fi
+  fi
+else
+  warn "pytest not available - skipping test verification"
+fi
+
+success "Verification check complete"
+
+#######################################
+# 5. DOCUMENTATION - Comments and clarity
+#######################################
+info "Checking documentation..."
+
+for file in $STAGED_PY; do
+  if [[ -f "$file" ]]; then
+    # Check for functions without docstrings (> 10 lines)
+    # This is a simplified check
+    func_count=$(grep -c "^def " "$file" 2>/dev/null || echo 0)
+    doc_count=$(grep -c '"""' "$file" 2>/dev/null || echo 0)
+
+    if [[ $func_count -gt 3 ]] && [[ $doc_count -lt $((func_count / 2)) ]]; then
+      warn "Low docstring coverage in $file ($doc_count docstrings for $func_count functions)"
+      ((WARNINGS++))
+    fi
+
+    # Check for TODO/FIXME that might need addressing
+    if grep -nE "(TODO|FIXME|XXX|HACK):" "$file" 2>/dev/null | head -3; then
+      warn "Found TODO/FIXME comments in $file - consider addressing"
+    fi
+  fi
+done
+
+# Check for overly long lines (clarity)
+for file in $STAGED_PY $STAGED_JS; do
+  if [[ -f "$file" ]]; then
+    long_lines=$(awk 'length > 120 {count++} END {print count+0}' "$file")
+    if [[ $long_lines -gt 5 ]]; then
+      warn "$file has $long_lines lines > 120 chars - consider breaking up"
+      ((WARNINGS++))
+    fi
+  fi
+done
+
+success "Documentation check complete"
+
+#######################################
+# SUMMARY
+#######################################
+echo ""
+echo "=========================================="
+echo "  Summary"
+echo "=========================================="
+echo ""
+
+if [[ $ERRORS -gt 0 ]]; then
+  fail "$ERRORS error(s) found - commit blocked"
+  echo ""
+  echo "Fix the errors above and try again."
+  echo "To bypass (not recommended): git commit --no-verify"
+  exit 1
+fi
+
+if [[ $WARNINGS -gt 0 ]]; then
+  warn "$WARNINGS warning(s) found - please review"
+  echo ""
+fi
+
+success "All checks passed - proceeding with commit"
+echo ""
+
+exit 0

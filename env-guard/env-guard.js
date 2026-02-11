@@ -153,8 +153,20 @@ function buildEditBlock(filePath) {
 
 // ── Response helpers ─────────────────────────────────────────
 
-const allow = ()       => JSON.stringify({ decision: 'allow' });
-const block = (reason) => JSON.stringify({ decision: 'block', reason });
+const allow = () => JSON.stringify({
+    hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow'
+    }
+});
+
+const block = (reason) => JSON.stringify({
+    hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: reason
+    }
+});
 
 // ── Main: read stdin → decide → write stdout ────────────────
 
