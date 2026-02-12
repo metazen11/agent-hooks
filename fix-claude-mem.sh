@@ -78,7 +78,9 @@ info() { echo "  →  $1"; }
 
 # Count matching processes (excludes grep itself)
 count_procs() {
-  ps aux 2>/dev/null | grep -v grep | grep -c "$1" || echo 0
+  local n
+  n=$(ps aux 2>/dev/null | grep -v grep | grep -c "$1" 2>/dev/null || true)
+  echo "${n:-0}"
 }
 
 # ── Status ─────────────────────────────────────────────────
