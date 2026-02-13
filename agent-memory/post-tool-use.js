@@ -72,7 +72,10 @@ const payload = JSON.stringify({
 
 debug(`POST /api/queue tool=${toolName} payload=${payload.length}b`);
 
-// Fire-and-forget HTTP POST (2s timeout)
+// Write stdout FIRST so Claude Code can proceed immediately
+console.log(JSON.stringify({}));
+
+// Fire-and-forget HTTP POST — unref so it doesn't block exit
 const url = new URL(SERVER_URL);
 const req = http.request({
   hostname: url.hostname,
@@ -84,13 +87,14 @@ const req = http.request({
     'Content-Length': Buffer.byteLength(payload),
   },
   timeout: 2000,
-}, (res) => { debug(`POST /api/queue → ${res.statusCode}`); });
+}, (res) => {
+  debug(`POST /api/queue → ${res.statusCode}`);
+  res.resume(); // drain response
+});
 
 req.on('error', (e) => { debug(`POST error: ${e.message}`); });
 req.on('timeout', () => { debug('POST timeout'); req.destroy(); });
+req.on('socket', (socket) => { socket.unref(); });
 
 req.write(payload);
 req.end();
-
-// Always allow immediately — don't wait for response
-allow();
