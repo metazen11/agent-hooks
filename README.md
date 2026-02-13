@@ -89,3 +89,17 @@ node install.js --uninstall
 ```
 
 Requires claude-mem plugin with SQLite database at `~/.claude-mem/claude-mem.db`.
+
+## Utilities
+
+### fix-claude-mem.sh
+
+Fixes the claude-mem plugin's PostToolUse hook that causes multi-second hangs after every tool call. Removes the problematic hook, kills zombie processes, and optionally cleans up the ChromaDB vector database.
+
+```bash
+./fix-claude-mem.sh              # full fix
+./fix-claude-mem.sh --status     # check current state
+./fix-claude-mem.sh --dry-run    # preview changes
+```
+
+Re-run after claude-mem plugin updates. See [`MEMORY.md`](MEMORY.md) for full background.
