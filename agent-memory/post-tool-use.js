@@ -15,7 +15,7 @@ const http = require('http');
 const fs = require('fs');
 
 const SERVER_URL = 'http://localhost:3377/api/queue';
-const DEBUG = process.env.AGENT_MEMORY_DEBUG !== '0';
+const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
 
 function debug(msg) {
   if (DEBUG) console.error(`[agent-memory:post-tool-use] ${msg}`);
