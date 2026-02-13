@@ -7,12 +7,19 @@
  *
  * stdin: JSON { tool_name, tool_input, tool_response, session_id, cwd }
  * stdout: JSON { } (always allow)
+ *
+ * Set AGENT_MEMORY_DEBUG=1 for verbose stderr logging.
  */
 
 const http = require('http');
 const fs = require('fs');
 
 const SERVER_URL = 'http://localhost:3377/api/queue';
+const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
+
+function debug(msg) {
+  if (DEBUG) console.error(`[agent-memory:post-tool-use] ${msg}`);
+}
 
 // Tools that produce no useful observations
 const SKIP_TOOLS = new Set([
@@ -23,13 +30,17 @@ const SKIP_TOOLS = new Set([
 
 function readStdin() {
   try {
-    return JSON.parse(fs.readFileSync(0, 'utf8'));
+    const raw = fs.readFileSync(0, 'utf8');
+    debug(`stdin: ${raw.slice(0, 150)}`);
+    return JSON.parse(raw);
   } catch {
+    debug('Failed to parse stdin');
     return null;
   }
 }
 
 function allow() {
+  debug('→ allow');
   console.log(JSON.stringify({}));
   process.exit(0);
 }
@@ -43,6 +54,7 @@ const toolName = input.tool_name || '';
 
 // Skip low-value tools
 if (SKIP_TOOLS.has(toolName)) {
+  debug(`Skipping ${toolName} (in SKIP_TOOLS)`);
   allow();
 }
 
@@ -58,6 +70,8 @@ const payload = JSON.stringify({
   last_user_message: null,
 });
 
+debug(`POST /api/queue tool=${toolName} payload=${payload.length}b`);
+
 // Fire-and-forget HTTP POST (2s timeout)
 const url = new URL(SERVER_URL);
 const req = http.request({
@@ -70,10 +84,10 @@ const req = http.request({
     'Content-Length': Buffer.byteLength(payload),
   },
   timeout: 2000,
-}, () => {});
+}, (res) => { debug(`POST /api/queue → ${res.statusCode}`); });
 
-req.on('error', () => {});  // Silently ignore errors
-req.on('timeout', () => { req.destroy(); });
+req.on('error', (e) => { debug(`POST error: ${e.message}`); });
+req.on('timeout', () => { debug('POST timeout'); req.destroy(); });
 
 req.write(payload);
 req.end();
