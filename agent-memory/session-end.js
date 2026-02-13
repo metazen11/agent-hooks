@@ -14,7 +14,7 @@ const http = require('http');
 const fs = require('fs');
 
 const SERVER_BASE = 'http://localhost:3377';
-const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
+const DEBUG = process.env.AGENT_MEMORY_DEBUG !== '0';
 
 function debug(msg) {
   if (DEBUG) console.error(`[agent-memory:session-end] ${msg}`);
