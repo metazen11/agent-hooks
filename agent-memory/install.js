@@ -197,6 +197,16 @@ function install() {
     }
   }
 
+  // Install skills
+  const skillsDir = path.join(HOME, '.claude', 'skills');
+  console.log('\n  skills:');
+  for (const skill of SKILL_FILES) {
+    const src  = path.join(PACKAGE_DIR, skill.src);
+    const dest = path.join(skillsDir, skill.dest);
+    ensureDir(path.dirname(dest));
+    symlink(src, dest);
+  }
+
   console.log('');
   console.log('-'.repeat(40));
   console.log('  Done. Restart Claude Code to activate.');
