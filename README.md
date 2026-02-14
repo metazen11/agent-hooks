@@ -159,6 +159,17 @@ The MCP server (`mcp_server.py`) runs as a stdio subprocess spawned by Claude Co
 
 Never skip to step 3. Always filter first. 10x token savings.
 
+#### Slash Command
+
+The `/mem-search` skill is installed at `~/.claude/skills/mem-search/SKILL.md`. It teaches Claude when and how to search memory, and is invocable by the user or auto-triggered when asking about past work.
+
+```
+/mem-search how did we fix the ChromaDB crash?
+/mem-search authentication architecture decisions
+```
+
+Claude will also auto-invoke when you ask naturally: *"Did we already solve this?"*, *"What did we decide about X?"*
+
 #### Installation
 
 **Prerequisites:**
