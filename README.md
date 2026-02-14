@@ -216,7 +216,14 @@ Add to `~/.claude/.mcp.json`:
 }
 ```
 
-**4. Restart Claude Code** — new sessions will show the MCP tools and receive the usage guide.
+**4. Install the `/mem-search` skill:**
+
+```bash
+mkdir -p ~/.claude/skills/mem-search
+cp agent-memory/skills/mem-search/SKILL.md ~/.claude/skills/mem-search/SKILL.md
+```
+
+**5. Restart Claude Code** — new sessions will show the MCP tools, receive the usage guide, and have `/mem-search` available.
 
 #### Debug Mode
 
