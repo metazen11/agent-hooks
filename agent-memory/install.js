@@ -24,6 +24,10 @@ const HOOK_FILES = [
   'session-end.js',
 ];
 
+const SKILL_FILES = [
+  { src: 'skills/mem-search/SKILL.md', dest: 'mem-search/SKILL.md' },
+];
+
 // Agent targets
 const TARGETS = {
   claude: {
