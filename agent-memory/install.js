@@ -231,6 +231,14 @@ function uninstall() {
     }
   }
 
+  // Remove skills
+  const skillsDir = path.join(HOME, '.claude', 'skills');
+  console.log('\n  skills:');
+  for (const skill of SKILL_FILES) {
+    const dest = path.join(skillsDir, skill.dest);
+    removeSymlink(dest);
+  }
+
   console.log('');
   console.log('-'.repeat(40));
   console.log('  Done. Hooks removed.');
