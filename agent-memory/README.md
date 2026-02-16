@@ -12,6 +12,8 @@ node install.js
 
 The installer handles everything: Python venv, dependencies, model downloads, Docker, MCP registration, hooks, and skills.
 
+For integrating with non-Claude agents (Cursor, Windsurf, Cline, Codex CLI, Zed, etc.), see [docs/PRIMER.md](https://github.com/metazen11/agent-memory/blob/main/docs/PRIMER.md).
+
 ## Commands
 
 ```bash
