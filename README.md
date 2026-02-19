@@ -98,7 +98,9 @@ Requires claude-mem plugin with SQLite database at `~/.claude-mem/claude-mem.db`
 
 **Moved to standalone repo:** [metazen11/agent-memory](https://github.com/metazen11/agent-memory)
 
-Persistent cross-session memory for AI coding agents. One command installs everything: Docker, Python venv, model downloads, hooks, MCP server, and skills.
+Persistent cross-session memory for AI coding agents. Built as a replacement for [claude-mem](https://github.com/thedotmack/claude-mem) which suffers from PostToolUse hook hangs (120s timeout, fires on every tool call), zombie worker-service processes (50-80+ per session), and ChromaDB segfaults on Apple Silicon. See the [full comparison](https://github.com/metazen11/agent-memory#why-replace-claude-mem) for details.
+
+One command installs everything: Docker, Python venv, model downloads, hooks, MCP server, and skills.
 
 ```bash
 git clone https://github.com/metazen11/agent-memory.git
