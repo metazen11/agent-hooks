@@ -1,0 +1,29 @@
+{
+  "name": "pre-commit-hook",
+  "version": "1.0.0",
+  "description": "Multi-agent pre-commit code quality hook with installation wizard for Claude Code, Codex, Gemini, and Anvil",
+  "author": "mz",
+  "license": "MIT",
+  "scripts": {
+    "install-hooks": "node install.js",
+    "uninstall-hooks": "node install.js --uninstall",
+    "test": "node test.js"
+  },
+  "files": [
+    "pre-commit-wrapper.js",
+    "install.js",
+    "instructions/",
+    "README.md",
+    "SKILL.md"
+  ],
+  "keywords": [
+    "pre-commit",
+    "hooks",
+    "claude-code",
+    "codex",
+    "gemini",
+    "anvil",
+    "code-quality",
+    "ai-agents"
+  ]
+}
