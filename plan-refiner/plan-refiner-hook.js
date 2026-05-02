@@ -125,17 +125,20 @@ function findActivePlan(cwd) {
   return null;
 }
 
-// Also check project-specific Claude plans dir
+// Search cwd-relative patterns, then fall back to home plans dir
 function findActivePlanWithProject(cwd) {
-  // First try: project-specific .claude/plans in the session context
-  // Claude Code stores plans in ~/.claude/plans/ or project-specific locations
+  // First: search cwd-relative patterns (project-local plans)
+  const local = findActivePlan(cwd);
+  if (local) return local;
+
+  // Fallback: check ~/.claude/plans/ for recently modified plans
+  // Only if cwd is NOT a temp directory (avoids test pollution)
   const homePlans = path.join(
     process.env.HOME || require('os').homedir(),
     '.claude', 'plans'
   );
 
-  // Check home plans dir for most recent
-  if (fs.existsSync(homePlans)) {
+  if (fs.existsSync(homePlans) && !cwd.startsWith('/tmp') && !cwd.startsWith('/private/tmp')) {
     try {
       const mdFiles = fs.readdirSync(homePlans)
         .filter((f) => f.endsWith('.md') && !f.startsWith('.'))
@@ -152,8 +155,7 @@ function findActivePlanWithProject(cwd) {
     } catch {}
   }
 
-  // Fallback: search cwd-relative patterns
-  return findActivePlan(cwd);
+  return null;
 }
 
 // ── Main ────────────────────────────────────────────────────
