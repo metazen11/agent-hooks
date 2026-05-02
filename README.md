@@ -49,6 +49,20 @@ git commit --no-verify
 
 ## Agent Hooks
 
+### quality-gate
+
+Three-layer engineering quality gate: JSON Schema contract, validators (Python + Node.js), git pre-commit hook, and GitHub Action CI. Validates agent-produced plans before commit and merge.
+
+```bash
+cd quality-gate
+node install.js --project=/path/to/repo --all     # Install into target project
+node install.js --project=/path/to/repo --uninstall
+```
+
+Targets: **git** (schema + validator + hook), **github** (CI workflow), **claude** (CLAUDE.md), **codex** (AGENTS.md), **gemini** (GEMINI.md).
+
+See [`quality-gate/README.md`](quality-gate/README.md) for full documentation.
+
 ### plan-refiner
 
 Deterministic plan quality gate. Blocks ExitPlanMode (Claude Code) and plan submission (Anvil) until the plan is refined through a senior engineering checklist. Uses a one-shot `refined_once: true` frontmatter stamp to prevent infinite loops.
