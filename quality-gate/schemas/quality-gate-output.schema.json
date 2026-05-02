@@ -1,0 +1,299 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/metazen11/agent-hooks/quality-gate/schemas/quality-gate-output.schema.json",
+  "title": "QualityGateOutput",
+  "version": "1.0.0",
+  "description": "Engineering quality gate contract for agent-produced plans. All plans must validate against this schema before merge.",
+  "type": "object",
+  "required": [
+    "verdict",
+    "source_reference",
+    "summary",
+    "gaps_found",
+    "refined_plan",
+    "acceptance_criteria",
+    "testing_plan",
+    "security_review",
+    "compliance_review",
+    "edge_cases",
+    "failure_modes",
+    "observability",
+    "deployment",
+    "definition_of_done",
+    "documentation",
+    "improvements"
+  ],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["approved", "needs_refinement", "blocked"],
+      "description": "Final gate decision"
+    },
+    "block_reason": {
+      "type": "string",
+      "description": "Required if verdict is 'blocked'"
+    },
+    "source_reference": {
+      "type": "object",
+      "required": ["system", "id"],
+      "properties": {
+        "system": {
+          "type": "string",
+          "enum": ["github", "asana", "jira", "linear", "todo_json", "other"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Issue/task ID, e.g. 'GH-142' or 'PROJ-301'"
+        },
+        "url": {
+          "type": "string",
+          "description": "URL to the issue/task (optional for local-only tasks)"
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 20,
+      "description": "What this plan accomplishes and why it matters"
+    },
+    "gaps_found": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["gap", "severity", "recommendation"],
+        "properties": {
+          "gap": { "type": "string" },
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "major", "minor"]
+          },
+          "recommendation": { "type": "string" }
+        }
+      }
+    },
+    "refined_plan": {
+      "type": "object",
+      "required": ["objective", "scope", "non_goals", "steps"],
+      "properties": {
+        "objective": { "type": "string", "minLength": 10 },
+        "scope": { "type": "string", "minLength": 10 },
+        "non_goals": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "canonical_names": {
+          "type": "object",
+          "description": "Map of logical name to actual name for files, services, tables, routes, etc.",
+          "additionalProperties": { "type": "string" }
+        },
+        "system_boundaries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["boundary", "integration_point"],
+            "properties": {
+              "boundary": { "type": "string" },
+              "integration_point": { "type": "string" }
+            }
+          }
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["step_number", "action", "owner", "deliverable"],
+            "properties": {
+              "step_number": { "type": "integer" },
+              "action": { "type": "string" },
+              "owner": { "type": "string" },
+              "deliverable": { "type": "string" },
+              "depends_on": {
+                "type": "array",
+                "items": { "type": "integer" }
+              }
+            }
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["criterion", "testable"],
+        "properties": {
+          "criterion": { "type": "string" },
+          "testable": {
+            "type": "boolean",
+            "const": true,
+            "description": "MUST be true — untestable criteria are rejected"
+          },
+          "verification_method": { "type": "string" }
+        }
+      },
+      "minItems": 1
+    },
+    "testing_plan": {
+      "type": "object",
+      "required": ["unit", "integration", "e2e", "negative", "regression"],
+      "properties": {
+        "unit": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Specific unit tests to write. Use 'N/A — [reason]' if none needed."
+        },
+        "integration": { "type": "array", "items": { "type": "string" } },
+        "e2e": { "type": "array", "items": { "type": "string" } },
+        "negative": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Permission tests, invalid input, abuse cases"
+        },
+        "regression": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tests for previously broken behavior"
+        }
+      }
+    },
+    "security_review": {
+      "type": "object",
+      "required": ["risks", "controls"],
+      "properties": {
+        "risks": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "controls": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "secrets_handling": { "type": "string" },
+        "auth_requirements": { "type": "string" },
+        "least_privilege": { "type": "string" }
+      }
+    },
+    "compliance_review": {
+      "type": "object",
+      "properties": {
+        "applicable_frameworks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["CJIS", "HIPAA", "PII", "CCPA", "SOC2", "FedRAMP", "NIST_CSF", "N/A"]
+          }
+        },
+        "requirements": { "type": "array", "items": { "type": "string" } },
+        "audit_trail": { "type": "string" }
+      }
+    },
+    "edge_cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["case", "expected_behavior"],
+        "properties": {
+          "case": { "type": "string" },
+          "expected_behavior": { "type": "string" }
+        }
+      },
+      "minItems": 1
+    },
+    "failure_modes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["failure", "degradation", "recovery"],
+        "properties": {
+          "failure": { "type": "string" },
+          "degradation": { "type": "string" },
+          "recovery": { "type": "string" }
+        }
+      },
+      "minItems": 1
+    },
+    "observability": {
+      "type": "object",
+      "required": ["logs", "metrics", "alerts", "error_messages"],
+      "properties": {
+        "logs": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "metrics": { "type": "array", "items": { "type": "string" } },
+        "alerts": { "type": "array", "items": { "type": "string" } },
+        "traces": { "type": "array", "items": { "type": "string" } },
+        "error_messages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "User-facing error messages for each failure mode"
+        }
+      }
+    },
+    "deployment": {
+      "type": "object",
+      "required": ["steps", "rollback"],
+      "properties": {
+        "steps": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "rollback": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "backward_compatibility": { "type": "string" },
+        "migration": { "type": "string" }
+      }
+    },
+    "definition_of_done": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 3,
+      "description": "Exact conditions that must be true before merge/close"
+    },
+    "documentation": {
+      "type": "object",
+      "required": ["updates_needed"],
+      "properties": {
+        "updates_needed": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "changelog_entry": { "type": "string" },
+        "ticket_notes": { "type": "string" }
+      }
+    },
+    "improvements": {
+      "type": "object",
+      "properties": {
+        "docs_to_update": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Docs to create or update for future agent runs"
+        },
+        "proposed_ci_checks": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "New CI gates, hooks, or linters to prevent recurring issues"
+        },
+        "agents_md_additions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Lines to add to docs/agents.md for future reference"
+        }
+      }
+    },
+    "clarifications_needed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["question", "why_blocking"],
+        "properties": {
+          "question": { "type": "string" },
+          "why_blocking": { "type": "string" }
+        }
+      },
+      "description": "Only populated when implementation would be unsafe without answers"
+    }
+  },
+  "if": { "properties": { "verdict": { "const": "blocked" } } },
+  "then": { "required": ["block_reason"] }
+}
