@@ -138,7 +138,9 @@ function findActivePlanWithProject(cwd) {
     '.claude', 'plans'
   );
 
-  if (fs.existsSync(homePlans) && !cwd.startsWith('/tmp') && !cwd.startsWith('/private/tmp')) {
+  const tmpPrefixes = ['/tmp', '/private/tmp', '/var/folders', os.tmpdir()];
+  const isTemp = tmpPrefixes.some((p) => cwd.startsWith(p));
+  if (fs.existsSync(homePlans) && !isTemp) {
     try {
       const mdFiles = fs.readdirSync(homePlans)
         .filter((f) => f.endsWith('.md') && !f.startsWith('.'))
