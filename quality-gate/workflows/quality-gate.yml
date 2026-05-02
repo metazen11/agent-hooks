@@ -1,0 +1,62 @@
+name: Engineering Quality Gate
+
+on:
+  pull_request:
+    paths:
+      - 'plans/**/*.json'
+  workflow_dispatch:
+    inputs:
+      plan_file:
+        description: 'Path to quality gate output JSON'
+        required: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install jsonschema
+        run: pip install jsonschema
+
+      - name: Validate plan files
+        run: |
+          FAILED=0
+          FILES=""
+
+          if [ -n "${{ github.event.inputs.plan_file }}" ]; then
+            FILES="${{ github.event.inputs.plan_file }}"
+          else
+            FILES=$(find plans/ -name '*.json' 2>/dev/null || true)
+          fi
+
+          if [ -z "$FILES" ]; then
+            echo "No plan files found — skipping."
+            exit 0
+          fi
+
+          for f in $FILES; do
+            echo "Validating: $f"
+            if ! python scripts/validate_quality_gate.py "$f"; then
+              FAILED=1
+            fi
+            echo "---"
+          done
+          exit $FAILED
+
+      - name: Comment on PR if failed
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '**Quality Gate Failed**\n\nThe engineering plan does not meet production standards. Check the workflow logs for specific violations.\n\nFix the plan and push again.'
+            })
