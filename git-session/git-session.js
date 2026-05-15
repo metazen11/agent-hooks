@@ -592,6 +592,48 @@ function handlePreEdit(hookInput) {
         return outputResult('PreToolUse', {});
     }
 
+    // Skip during rebase / merge / cherry-pick / detached HEAD — committing
+    // here strands work on a non-branch ref and breaks history.
+    const gitDir = git('rev-parse --git-dir', cwd).output.trim() || '.git';
+    const inProgressMarkers = [
+        'rebase-merge', 'rebase-apply',
+        'MERGE_HEAD', 'CHERRY_PICK_HEAD',
+        'BISECT_LOG', 'REVERT_HEAD',
+    ];
+    for (const marker of inProgressMarkers) {
+        try {
+            if (require('fs').existsSync(require('path').join(cwd, gitDir, marker))) {
+                log(`Skipping checkpoint - git operation in progress (${marker})`);
+                return outputResult('PreToolUse', {});
+            }
+        } catch (e) { /* best-effort */ }
+    }
+    const branchRef = git('symbolic-ref -q HEAD', cwd);
+    if (!branchRef.success || !branchRef.output.trim()) {
+        log('Skipping checkpoint - detached HEAD');
+        return outputResult('PreToolUse', {});
+    }
+
+    // Skip if a branch switch / reset / rebase happened in the last 10 seconds.
+    // Checkpointing right after a switch can land work on the wrong branch
+    // when the working tree carries unstaged changes across the switch.
+    const reflog = git('reflog --date=unix HEAD -10', cwd);
+    if (reflog.success) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const lines = reflog.output.split('\n').slice(0, 10);
+        for (const line of lines) {
+            const m = line.match(/HEAD@\{(\d+)\}:\s+(checkout|reset|rebase)/);
+            if (m) {
+                const ts = parseInt(m[1], 10);
+                if (nowSec - ts < 10) {
+                    log(`Skipping checkpoint - recent ${m[2]} (${nowSec - ts}s ago)`);
+                    return outputResult('PreToolUse', {});
+                }
+                break;
+            }
+        }
+    }
+
     // Rate limit checkpoints
     const now = Date.now();
     if (now - lastCheckpointTime < CHECKPOINT_COOLDOWN_MS) {
