@@ -12,31 +12,30 @@ Git hooks and agent hooks for development workflows.
 
 ### pre-commit
 
-Runs before each commit to ensure code quality:
+Runs before each commit to ensure code quality. See [`pre-commit-hook/`](pre-commit-hook/) for the multi-agent installer.
 
 1. **Simplicity Check** - Detects over-engineering patterns
-   - Deep inheritance chains
-   - Overly complex comprehensions
+2. **Security Check** - OWASP-style vulnerability scan (SQL injection, XSS, hardcoded secrets)
+3. **Naming Conventions** - Python snake_case/PascalCase, JavaScript camelCase
+4. **Test Verification** - Runs related tests for changed files
+5. **Documentation** - Docstring coverage, TODO/FIXME flags, line length
 
-2. **Security Check** - OWASP-style vulnerability scan
-   - SQL injection patterns
-   - Command injection risks
-   - Hardcoded secrets
-   - XSS vulnerabilities (JS)
+### pre-commit-hook (multi-agent installer)
 
-3. **Naming Conventions**
-   - Python: snake_case functions, PascalCase classes
-   - JavaScript: camelCase functions
-   - Descriptive variable names
+Interactive wizard that installs the pre-commit hook across multiple AI coding agents:
 
-4. **Test Verification**
-   - Runs related tests for changed files
-   - Blocks commit on test failure
+```bash
+cd pre-commit-hook
+node install.js              # Interactive wizard
+node install.js --all        # All detected agents
+node install.js --uninstall  # Remove all
+```
 
-5. **Documentation**
-   - Checks docstring coverage
-   - Flags TODO/FIXME comments
-   - Warns on overly long lines
+Supports: **Git** (native hook), **Claude Code** (PreToolUse), **Codex** (AGENTS.md instruction), **Gemini CLI** (GEMINI.md instruction), **Anvil** (.anvil instruction).
+
+Also distributable via: `npx skills add metazen11/hooks@pre-commit-hook`
+
+See [`pre-commit-hook/README.md`](pre-commit-hook/README.md) for full documentation.
 
 ## Bypassing Hooks
 
@@ -49,6 +48,35 @@ git commit --no-verify
 **Not recommended** - fix the issues instead.
 
 ## Agent Hooks
+
+### quality-gate
+
+Three-layer engineering quality gate: JSON Schema contract, validators (Python + Node.js), git pre-commit hook, and GitHub Action CI. Validates agent-produced plans before commit and merge.
+
+```bash
+cd quality-gate
+node install.js --project=/path/to/repo --all     # Install into target project
+node install.js --project=/path/to/repo --uninstall
+```
+
+Targets: **git** (schema + validator + hook), **github** (CI workflow), **claude** (CLAUDE.md), **codex** (AGENTS.md), **gemini** (GEMINI.md).
+
+See [`quality-gate/README.md`](quality-gate/README.md) for full documentation.
+
+### plan-refiner
+
+Deterministic plan quality gate. Blocks ExitPlanMode (Claude Code) and plan submission (Anvil) until the plan is refined through a senior engineering checklist. Uses a one-shot `refined_once: true` frontmatter stamp to prevent infinite loops.
+
+```bash
+cd plan-refiner
+node install.js              # Interactive wizard
+node install.js --all        # All detected agents
+node install.js --uninstall  # Remove all
+```
+
+Supports: **Claude Code** (PreToolUse hook, deterministic), **Anvil** (middleware, deterministic), **Codex** (AGENTS.md instruction), **Gemini** (GEMINI.md instruction).
+
+See [`plan-refiner/README.md`](plan-refiner/README.md) for full documentation.
 
 ### env-guard
 

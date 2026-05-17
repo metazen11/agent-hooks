@@ -1,0 +1,32 @@
+{
+  "name": "plan-refiner",
+  "version": "1.0.0",
+  "description": "Deterministic plan quality gate hook for Claude Code, Anvil, Codex, and Gemini. Blocks plan submission until refined.",
+  "author": "mz",
+  "license": "MIT",
+  "scripts": {
+    "install-hooks": "node install.js",
+    "uninstall-hooks": "node install.js --uninstall",
+    "test": "node test.js"
+  },
+  "files": [
+    "plan-refiner-hook.js",
+    "plan-refiner-middleware.py",
+    "refiner-prompt.md",
+    "install.js",
+    "instructions/",
+    "README.md",
+    "SKILL.md"
+  ],
+  "keywords": [
+    "plan",
+    "refiner",
+    "quality-gate",
+    "hooks",
+    "claude-code",
+    "anvil",
+    "codex",
+    "gemini",
+    "ai-agents"
+  ]
+}
