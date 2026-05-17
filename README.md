@@ -78,6 +78,21 @@ node install.js --uninstall
 
 Configure via environment variables: `GIT_HOOK_PROTECTED_BRANCHES`, `GIT_HOOK_AUTO_PUSH`, `GIT_HOOK_AUTO_PULL`, `GIT_HOOK_CHECKPOINT`, `GIT_HOOK_VERBOSE`.
 
+**Checkpoint skip conditions** — to prevent racing the agent's own git operations, the pre-edit checkpoint is suppressed when any of these are true:
+
+| Condition | Source |
+|---|---|
+| Next Bash tool call starts with `git commit\|push\|pull\|fetch\|rebase\|cherry-pick\|reset\|revert\|checkout\|stash\|merge\|tag\|am\|format-patch\|rev-parse\|switch` | `tool_input.command` inspection — automatic |
+| Within 60s of the most recent git workflow Bash call | In-process skip window |
+| `.git/.claude-busy` lock file exists with mtime < 5 minutes | Explicit opt-in for orchestrators |
+| In-progress rebase / merge / cherry-pick / bisect / revert | `.git/` marker files |
+| Detached HEAD or branch switch / reset / rebase within last 10 s | git reflog |
+| 30 s cooldown since last checkpoint | In-process timer |
+
+Stale lock files (mtime > 5 min) are ignored — a forgotten `.git/.claude-busy` does not silently disable checkpoints for the rest of the session.
+
+Run `git-session/test-pre-edit-skips.sh` to verify these skip paths end-to-end.
+
 ### memory-context (legacy)
 
 Injects recent claude-mem observations into session context on startup. Queries the local SQLite database for the 3 most recent memories matching the current project.

@@ -29,6 +29,21 @@
  *     "tool_name": "Edit|Write",           // For PreToolUse
  *     "tool_input": { "file_path": "..." } // For PreToolUse
  *   }
+ *
+ * PRE-EDIT CHECKPOINT SKIP CONDITIONS:
+ *   The pre-edit hook tries hard NOT to race the agent's own git operations.
+ *   The checkpoint is suppressed when any of these is true:
+ *     1. tool_name === "Bash" and tool_input.command matches the git workflow
+ *        pattern (commit/push/pull/fetch/rebase/cherry-pick/reset/revert/
+ *        checkout/stash/merge/tag/am/format-patch/rev-parse/switch). Also
+ *        opens a 60s window so subsequent edits in the same workflow skip.
+ *     2. We are within the 60s window opened by a prior git workflow call.
+ *     3. .git/.claude-busy exists and mtime < 5 minutes (explicit opt-in for
+ *        orchestrators that want to bracket a multi-step git workflow).
+ *     4. Existing skips: in-progress rebase/merge/cherry-pick, detached HEAD,
+ *        recent branch switch/reset/rebase (10s reflog window), 30s cooldown.
+ *
+ *   Run `git-session/test-pre-edit-skips.sh` to verify these paths.
  */
 
 const { execSync } = require('child_process');
@@ -51,6 +66,27 @@ const CONFIG = {
 // Track checkpoints to avoid excessive commits
 const CHECKPOINT_COOLDOWN_MS = 30000; // 30 seconds between checkpoints
 let lastCheckpointTime = 0;
+
+// Skip-checkpoint window set when the agent is mid-git-workflow (e.g. just
+// called `git commit`, `git rebase`, etc.). Multi-step git workflows that span
+// several Bash calls will all see the skip flag for this long after the most
+// recent git workflow command.
+const GIT_WORKFLOW_SKIP_WINDOW_MS = 60_000;
+let gitWorkflowSkipUntil = 0;
+
+// Lock-file mechanism for cross-process / explicit-opt-in skip. If a workflow
+// orchestrator (or the agent itself) creates `.git/.claude-busy`, every
+// checkpoint inside the same repo is suppressed until the file is removed or
+// goes stale. Stale = mtime older than this many ms.
+const CLAUDE_BUSY_LOCKFILE = '.claude-busy';
+const CLAUDE_BUSY_STALE_MS = 5 * 60_000;
+
+// Commands whose presence in a Bash tool_input means "the agent is running its
+// own git workflow next — do not race it with a checkpoint, and keep the skip
+// window open for the multi-step tail (e.g. checkout → cherry-pick → commit)."
+// Anchored matching against the first word after optional leading whitespace
+// so we don't accidentally match `git_commit_helper` or `mygit commit`.
+const GIT_WORKFLOW_PATTERN = /^\s*git\s+(commit|push|pull|fetch|rebase|cherry-pick|reset|revert|checkout|stash|merge|tag|am|format-patch|rev-parse|switch)\b/;
 
 // =============================================================================
 // Utilities
@@ -114,6 +150,55 @@ function hasStagedChanges(dir) {
 function hasRemote(dir) {
     const result = git('remote', dir);
     return result.success && result.output.includes('origin');
+}
+
+// Path to the busy-lock inside the repo's .git dir. Returns null if the dir
+// is not a git repo or .git is unreadable (corrupted submodule, etc.).
+function busyLockPath(dir) {
+    const gitDir = git('rev-parse --git-dir', dir);
+    if (!gitDir.success) return null;
+    const resolved = path.isAbsolute(gitDir.output)
+        ? gitDir.output
+        : path.join(dir, gitDir.output);
+    return path.join(resolved, CLAUDE_BUSY_LOCKFILE);
+}
+
+// Returns true if .git/.claude-busy exists and was touched within the stale
+// window. The 5-minute window means a forgotten lock file does not silently
+// disable checkpoints for the rest of the session.
+function isClaudeBusy(dir) {
+    const p = busyLockPath(dir);
+    if (!p) return false;
+    try {
+        const stat = fs.statSync(p);
+        const ageMs = Date.now() - stat.mtimeMs;
+        if (ageMs > CLAUDE_BUSY_STALE_MS) {
+            log(`Lock file ${p} is stale (${Math.round(ageMs / 1000)}s old) — ignoring`);
+            return false;
+        }
+        log(`Lock file ${p} present (${Math.round(ageMs / 1000)}s old) — skipping checkpoint`);
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+// Returns true when the next Bash tool call IS itself a git workflow command.
+// We use this both to (a) skip the checkpoint that would race the git call and
+// (b) refresh the skip window so subsequent edits in the same workflow are
+// also covered.
+function isGitWorkflowCommand(toolName, toolInput) {
+    if (toolName !== 'Bash') return false;
+    const cmd = (toolInput && toolInput.command) || '';
+    return GIT_WORKFLOW_PATTERN.test(cmd);
+}
+
+function isInGitWorkflowWindow() {
+    return Date.now() < gitWorkflowSkipUntil;
+}
+
+function openGitWorkflowWindow() {
+    gitWorkflowSkipUntil = Date.now() + GIT_WORKFLOW_SKIP_WINDOW_MS;
 }
 
 function generateBranchName(sessionId, cwd) {
@@ -373,17 +458,42 @@ function handlePreEdit(hookInput) {
 
     log(`Pre-edit checkpoint: ${toolName}`);
 
-    // Only for Edit, Write, and destructive Bash commands
+    // ─ Skip when the agent is about to run its own git workflow. ─
+    // If the next Bash call IS a git workflow command, we must not race it
+    // with a checkpoint commit. Open a 60s window so any edits the agent
+    // makes between this step and the rest of the workflow (e.g. resolve a
+    // merge conflict, then `git commit`) also skip.
+    if (isGitWorkflowCommand(toolName, toolInput)) {
+        const cmd = (toolInput.command || '').slice(0, 80);
+        log(`Git workflow command detected (${cmd}) — opening 60s skip window`);
+        openGitWorkflowWindow();
+        return outputResult('PreToolUse', {});
+    }
+
+    // Already in a git workflow window opened by a recent git workflow call.
+    if (isInGitWorkflowWindow()) {
+        log('Within git workflow skip window — skipping checkpoint');
+        return outputResult('PreToolUse', {});
+    }
+
+    // Lock-file skip — for cross-process orchestrators or explicit opt-in.
+    // Honored before the file-type filter so a busy lock suppresses checkpoints
+    // even on Edit/Write tools that would otherwise unconditionally trigger.
+    if (isClaudeBusy(cwd)) {
+        return outputResult('PreToolUse', {});
+    }
+
+    // Only for Edit, Write, and a narrow set of destructive Bash commands.
+    // Git workflow commands are handled above and explicitly NOT in this
+    // pattern list — they're skipped, not checkpointed.
     const destructiveTools = ['Edit', 'Write', 'NotebookEdit'];
     if (!destructiveTools.includes(toolName)) {
-        // Also check for destructive bash commands
         if (toolName === 'Bash') {
             const cmd = toolInput.command || '';
             const destructivePatterns = [
                 /\brm\s+(-rf?|--recursive)?\s/i,
-                /\bgit\s+(reset|revert|checkout|clean)/i,
-                /\bmv\s+/,
-                />\s*[^|]/, // Redirect overwrite (not pipe)
+                /\bmv\s+\S+\s+\S+/, // mv with two args, not `git mv` (handled by workflow skip)
+                /^\s*>\s*\S/,        // shell redirect-overwrite at start of command
             ];
             const isDestructive = destructivePatterns.some(p => p.test(cmd));
             if (!isDestructive) {
