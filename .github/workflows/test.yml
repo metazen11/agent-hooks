@@ -1,0 +1,54 @@
+name: test
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  hooks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node is pre-installed on ubuntu-latest; we pin a version anyway for
+      # reproducibility. Hooks use only Node built-ins (fs, path, os,
+      # child_process) — no `npm install` step needed.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Syntax-check all hook .js files
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            if ! node -c "$f"; then
+              echo "::error file=$f::syntax error"
+              fail=1
+            fi
+          done < <(find . -name '*.js' -not -path './node_modules/*' -not -path './.git/*')
+          exit $fail
+
+      - name: Discover and run every test-*.sh under per-hook directories
+        run: |
+          set -euo pipefail
+          mapfile -t tests < <(find . -maxdepth 3 -type f -name 'test-*.sh' -not -path './node_modules/*' -not -path './.git/*' | sort)
+          if [[ ${#tests[@]} -eq 0 ]]; then
+            echo "::warning::no test-*.sh scripts found"
+            exit 0
+          fi
+          echo "Found ${#tests[@]} test script(s):"
+          printf '  %s\n' "${tests[@]}"
+          echo
+          fail=0
+          for t in "${tests[@]}"; do
+            echo "──── $t ────"
+            chmod +x "$t"
+            if ! bash "$t"; then
+              echo "::error file=$t::test failed"
+              fail=1
+            fi
+            echo
+          done
+          exit $fail

@@ -93,6 +93,18 @@ Stale lock files (mtime > 5 min) are ignored — a forgotten `.git/.claude-busy`
 
 Run `git-session/test-pre-edit-skips.sh` to verify these skip paths end-to-end.
 
+### reconcile-gate
+
+Strict-block PreToolUse hook that enforces the global branching contract: `gh pr create` is refused unless `--base` is the production trunk (`main`/`master`) and `--head` is the integration trunk (`dev`/`develop`). Bypass with `--force-anyway`. Routine agent work lands on the integration trunk via the `reconciler` specialist / `/reconcile` skill, not via per-change PRs.
+
+```bash
+cd reconcile-gate
+node install.js            # symlinks into ~/.claude/hooks/ + patches settings
+node install.js --uninstall
+```
+
+See [`reconcile-gate/README.md`](reconcile-gate/README.md) for the full decision matrix. Run `reconcile-gate/test-reconcile-gate.sh` for the 17-case self-test.
+
 ### memory-context (legacy)
 
 Injects recent claude-mem observations into session context on startup. Queries the local SQLite database for the 3 most recent memories matching the current project.
