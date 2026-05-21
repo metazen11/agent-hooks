@@ -249,6 +249,91 @@ function formatChangeSummary(dir) {
     return parts.join(', ') || 'Changes';
 }
 
+/**
+ * Write a session-handoff marker so the next session-start (any agent) can
+ * surface a protected-branch redirect that happened at the prior session's
+ * end. The marker lives at `plans/session-handoff/<timestamp>.json` (created
+ * on demand) and is agent-agnostic — any tool can read or write here.
+ *
+ * Schema (intentionally minimal):
+ *   {
+ *     "schema_version": "1",
+ *     "kind": "protected_branch_redirect",
+ *     "timestamp": "2026-05-21 08:13:44",
+ *     "original_branch": "develop",
+ *     "redirected_branch": "claude/session-20260521",
+ *     "commit_sha": "9844791...",
+ *     "summary": "1 new"
+ *   }
+ *
+ * Bail silently on any I/O error — the commit already landed, the marker
+ * is best-effort signal. We never want hook plumbing to fail a session.
+ */
+function writeHandoffMarker(cwd, marker) {
+    try {
+        const dir = path.join(cwd, 'plans', 'session-handoff');
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        const slug = marker.timestamp.replace(/[: ]/g, '-');
+        const filePath = path.join(dir, `${slug}.json`);
+        const payload = {
+            schema_version: '1',
+            kind: 'protected_branch_redirect',
+            timestamp: marker.timestamp,
+            original_branch: marker.originalBranch,
+            redirected_branch: marker.redirectedBranch,
+            commit_sha: marker.commitSha,
+            summary: marker.summary,
+        };
+        fs.writeFileSync(filePath, JSON.stringify(payload, null, 2) + '\n');
+        log(`Handoff marker written: ${filePath}`);
+    } catch (err) {
+        log(`Failed to write handoff marker (non-fatal): ${err.message}`);
+    }
+}
+
+/**
+ * Read every unprocessed marker in `plans/session-handoff/` and return
+ * one short message per marker for the session-start system message.
+ *
+ * "Unprocessed" = lives at the top level of plans/session-handoff/.
+ * Processed markers are moved by the agent to plans/session-handoff/processed/.
+ * The hook never deletes markers — that's the agent's responsibility after
+ * acting on them, per the AGENTS.md contract.
+ *
+ * Bail silently on any I/O error.
+ */
+function readUnprocessedHandoffMarkers(cwd) {
+    try {
+        const dir = path.join(cwd, 'plans', 'session-handoff');
+        if (!fs.existsSync(dir)) return [];
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        const messages = [];
+        for (const entry of entries) {
+            if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+            try {
+                const raw = fs.readFileSync(path.join(dir, entry.name), 'utf8');
+                const m = JSON.parse(raw);
+                if (m.kind === 'protected_branch_redirect') {
+                    messages.push(
+                        `Session-handoff marker: prior session redirected commit ${(m.commit_sha || '').slice(0, 7)} ` +
+                        `from '${m.original_branch}' to '${m.redirected_branch}' (${m.summary || 'changes'}). ` +
+                        `Review plans/session-handoff/${entry.name}, decide if it lands via /reconcile, ` +
+                        `then move the marker to plans/session-handoff/processed/.`
+                    );
+                }
+            } catch (err) {
+                log(`Skipping malformed handoff marker ${entry.name}: ${err.message}`);
+            }
+        }
+        return messages;
+    } catch (err) {
+        log(`Failed to read handoff markers (non-fatal): ${err.message}`);
+        return [];
+    }
+}
+
 // Build the correct output JSON for Claude Code hooks
 function outputResult(eventName, result) {
     // For PreToolUse: use permissionDecision allow/deny
@@ -331,6 +416,15 @@ function handleSessionStart(hookInput) {
 
     // Collect messages for combined output
     const messages = [];
+
+    // Step 0: Surface unprocessed handoff markers from prior sessions.
+    //         These are written by handleSessionEnd when a protected-branch
+    //         redirect happened. Agent-agnostic signal: any tool can read
+    //         this directory.
+    const handoffMessages = readUnprocessedHandoffMarkers(cwd);
+    if (handoffMessages.length > 0) {
+        messages.push(...handoffMessages);
+    }
 
     // Step 1: Check for uncommitted changes on protected branch
     if (CONFIG.protectedBranches.includes(currentBranch) && hasChanges(cwd)) {
@@ -568,6 +662,7 @@ function squashCheckpoints(cwd, branch) {
 
 function handleSessionEnd(hookInput) {
     const cwd = getWorkingDir(hookInput);
+    const sessionId = hookInput.session_id || '';
 
     log(`Session end in: ${cwd}`);
 
@@ -583,12 +678,42 @@ function handleSessionEnd(hookInput) {
         return outputResult('SessionEnd', {});
     }
 
-    const currentBranch = getCurrentBranch(cwd);
+    const startingBranch = getCurrentBranch(cwd);
+    let currentBranch = startingBranch;
     const messages = [];
+    let handoffMarker = null;  // populated if we redirect off a protected branch
 
     // 1) If there are uncommitted changes, make a final session-end commit.
+    //    SAFETY: if we're on a protected branch (e.g. develop), redirect the
+    //    commit to a working branch. The push gate below already refuses to
+    //    push protected branches, so a direct commit here would otherwise
+    //    leave an orphaned local-only commit on the integration trunk —
+    //    invisible to any future session that doesn't manually inspect
+    //    `git log origin/develop..develop`. Redirecting preserves the work
+    //    AND drops a handoff marker that the next session-start can find.
     if (hasChanges(cwd)) {
         const changeSummary = formatChangeSummary(cwd);
+
+        if (CONFIG.protectedBranches.includes(currentBranch)) {
+            const redirectBranch = generateBranchName(sessionId, cwd);
+            log(`On protected branch '${currentBranch}' with uncommitted changes — redirecting to '${redirectBranch}'`);
+            const checkoutResult = git(`checkout -b ${redirectBranch}`, cwd);
+            if (!checkoutResult.success) {
+                log(`Could not create redirect branch: ${checkoutResult.output}`);
+                // Bail loudly rather than commit to the protected branch.
+                messages.push(`session-end: could not redirect off '${currentBranch}' — leaving dirty tree intact for human resolution`);
+                console.error(`[git-session] ${messages.join(' | ')}`);
+                return outputResult('SessionEnd', { systemMessage: messages.join(' ') });
+            }
+            messages.push(`Redirected session-end commit from '${currentBranch}' to '${redirectBranch}' (protected-branch safety)`);
+            currentBranch = redirectBranch;
+            handoffMarker = {
+                originalBranch: startingBranch,
+                redirectedBranch: redirectBranch,
+                summary: changeSummary,
+            };
+        }
+
         git('add -A', cwd);
         const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
         const commitMsg = `Claude session end: ${changeSummary}\n\nAuto-committed at ${timestamp}`;
@@ -600,6 +725,16 @@ function handleSessionEnd(hookInput) {
         }
         log(`Committed final session-end snapshot: ${changeSummary}`);
         messages.push(`Final session commit: ${changeSummary}`);
+
+        // If we redirected, capture the SHA + write a handoff marker file
+        // so the next session-start can surface it (any agent, any tool).
+        if (handoffMarker) {
+            const shaResult = git('rev-parse HEAD', cwd);
+            handoffMarker.commitSha = shaResult.success ? shaResult.output.trim() : 'unknown';
+            handoffMarker.timestamp = timestamp;
+            writeHandoffMarker(cwd, handoffMarker);
+            messages.push(`Wrote handoff marker: plans/session-handoff/<timestamp>.json`);
+        }
     } else {
         log('No uncommitted changes at session end');
     }
