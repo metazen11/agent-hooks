@@ -2,8 +2,18 @@
 /**
  * output-redact — PostToolUse hook for Bash tool output.
  *
- * Reads the Bash tool's stdout/stderr from JSON on stdin, redacts known
- * sensitive patterns inline, writes the redacted JSON to stdout.
+ * Reads the Bash tool's stdout/stderr from the PostToolUse JSON on stdin,
+ * redacts known sensitive patterns, and — when anything was masked — emits
+ * `hookSpecificOutput.updatedToolOutput` so the harness REPLACES the tool
+ * result the model sees with the redacted version.
+ *
+ * CONTRACT (critical): Claude Code only replaces model-visible tool output when
+ * a PostToolUse hook emits, on stdout with exit 0:
+ *   {"hookSpecificOutput":{"hookEventName":"PostToolUse",
+ *     "updatedToolOutput":"<redacted text>"}}
+ * Writing the mutated payload back to stdout (the original approach) is a SILENT
+ * NO-OP — the harness ignores it and the raw secret still reaches the model.
+ * When nothing matched, we emit nothing and exit 0 (original output stands).
  *
  * Wired in ~/.claude/settings.json under PostToolUse matcher: "Bash".
  *
@@ -222,8 +232,8 @@ async function main() {
   try {
     payload = JSON.parse(input);
   } catch (err) {
-    // Malformed input — pass through unchanged rather than break the harness.
-    process.stdout.write(input);
+    // Malformed input — emit nothing (no replacement) rather than break the
+    // harness. The original output stands; fail open.
     process.exit(0);
   }
 
@@ -234,7 +244,7 @@ async function main() {
     const cwd = (payload && payload.tool_input && payload.tool_input.cwd) || process.cwd();
     const command = (payload && payload.tool_input && payload.tool_input.command) || '';
     logBypass(cwd, command);
-    process.stdout.write(input);
+    // Emit nothing → no updatedToolOutput → original output stands (the bypass).
     process.exit(0);
   }
 
@@ -244,22 +254,45 @@ async function main() {
 
   const counts = {};
   const redacted = walkAndRedact(payload, allowlist, counts);
-
-  // Add a summary so the agent KNOWS redaction happened
   const totalRedactions = Object.values(counts).reduce((a, b) => a + b, 0);
-  if (totalRedactions > 0 && redacted.tool_response) {
-    const summary = `\n[output-redact: ${totalRedactions} value(s) masked — ${Object.entries(counts).map(([k, v]) => `${k}:${v}`).join(', ')}]\n`;
-    if (typeof redacted.tool_response.stdout === 'string') {
-      redacted.tool_response.stdout = redacted.tool_response.stdout + summary;
-    }
+
+  // If nothing matched, emit nothing (exit 0) — the original output stands.
+  // Writing the mutated payload to stdout does NOTHING: Claude Code's
+  // PostToolUse contract only replaces what the model sees when the hook emits
+  // `hookSpecificOutput.updatedToolOutput`. The previous implementation wrote
+  // the whole payload to stdout, which the harness ignores — a silent no-op
+  // (the secret still reached the model). See output-redact/README.md.
+  if (totalRedactions === 0) {
+    process.exit(0);
   }
 
-  process.stdout.write(JSON.stringify(redacted));
+  // Build the replacement tool output the model will actually see. Prefer the
+  // redacted stdout; append redacted stderr if present, then a summary so the
+  // agent knows masking happened and cannot recover the value.
+  const tr = redacted.tool_response || {};
+  const parts = [];
+  if (typeof tr.stdout === 'string' && tr.stdout.length) parts.push(tr.stdout);
+  if (typeof tr.stderr === 'string' && tr.stderr.length) parts.push(tr.stderr);
+  let updated = parts.join('\n');
+  const summary = `[output-redact: ${totalRedactions} value(s) masked — ${Object.entries(counts).map(([k, v]) => `${k}:${v}`).join(', ')}]`;
+  updated = updated.length ? `${updated}\n${summary}` : summary;
+
+  // THIS is the field the harness honors: it replaces the tool result the
+  // model sees. Exit 0 so the JSON is processed (exit 2 would discard it).
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PostToolUse',
+      updatedToolOutput: updated,
+      additionalContext: `output-redact masked ${totalRedactions} secret value(s) before this output reached you.`,
+    },
+  }));
   process.exit(0);
 }
 
 main().catch((err) => {
-  // Fail open — never block tool output on hook error
+  // Fail open — never block tool output on hook error. Emit nothing so the
+  // harness keeps the original output (writing raw stdin would be a no-op
+  // anyway under the updatedToolOutput contract).
   process.stderr.write(`output-redact: error ${err.message}\n`);
-  process.stdin.pipe(process.stdout);
+  process.exit(0);
 });

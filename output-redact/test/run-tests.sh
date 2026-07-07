@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # Test harness for output-redact.
 #
-# Pipes fixtures.json through output-redact.js, then asserts:
-#   1. Every category in expected-categories.txt appears as [REDACTED:CATEGORY]
-#      in the stdout field of the result.
+# Pipes fixtures.json through output-redact.js, then asserts against the ACTUAL
+# harness contract — the hook must emit hookSpecificOutput.updatedToolOutput,
+# which is the only field Claude Code uses to replace the model-visible output.
+# (Asserting the internal tool_response.stdout would pass even when the hook is
+# a silent no-op, which is the bug this suite now guards against.)
+#
+#   0. The hook emits hookSpecificOutput.updatedToolOutput (the contract field).
+#   1. Every category in expected-categories.txt appears as [REDACTED:CATEGORY].
 #   2. Allowed private IPs (192.168.*, 127.*, 172.17.*) appear UNREDACTED.
-#   3. No raw fixture token strings survive in the output.
+#   3. No raw fixture token strings survive in the replacement output.
+#   4. A redaction summary is present.
+#   5. Clean input (no secrets) emits NOTHING (no replacement → original stands).
 #
 # Exit 0 = all assertions pass.
 # Exit non-zero = at least one assertion failed; details printed.
@@ -36,9 +43,22 @@ INPUT="$(STRIPE_VECTOR="$STRIPE_VECTOR" node -e '
   });' < "$FIXTURE")"
 
 OUT="$(printf '%s' "$INPUT" | node "$HOOK")"
-STDOUT="$(echo "$OUT" | node -e 'let d=""; process.stdin.on("data",c=>d+=c).on("end",()=>{const j=JSON.parse(d);process.stdout.write(j.tool_response.stdout||"");})')"
 
 FAIL=0
+
+# Assertion 0 (CONTRACT): the hook must emit hookSpecificOutput.updatedToolOutput.
+# This is the field the harness honors to replace what the model sees. If it is
+# absent, the hook is a silent no-op and the secret reaches the model.
+if echo "$OUT" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);process.exit(j.hookSpecificOutput&&typeof j.hookSpecificOutput.updatedToolOutput==="string"?0:1)}catch{process.exit(1)}})'; then
+  echo "PASS: hook emits hookSpecificOutput.updatedToolOutput (harness will replace output)"
+else
+  echo "FAIL: hook did NOT emit hookSpecificOutput.updatedToolOutput — redaction is a NO-OP"
+  echo "  raw hook stdout: ${OUT:0:200}"
+  FAIL=1
+fi
+
+# The replacement text the model will actually see.
+STDOUT="$(echo "$OUT" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);process.stdout.write((j.hookSpecificOutput&&j.hookSpecificOutput.updatedToolOutput)||"")}catch{process.stdout.write("")}})')"
 
 # Assertion 1: each expected category must appear as [REDACTED:CAT]
 while IFS= read -r cat; do
@@ -81,6 +101,18 @@ if echo "$STDOUT" | grep -q "\[output-redact:"; then
   echo "PASS: redaction summary line present"
 else
   echo "FAIL: redaction summary line missing"
+  FAIL=1
+fi
+
+# Assertion 5: clean input (no secrets) must emit NOTHING → no replacement, so
+# the original output stands unchanged. Emitting an empty/way-different output
+# for benign commands would corrupt normal tool results.
+CLEAN_IN='{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"echo hi"},"tool_response":{"stdout":"just a normal line, nothing secret here","stderr":"","exit_code":0}}'
+CLEAN_OUT="$(printf '%s' "$CLEAN_IN" | node "$HOOK")"
+if [ -z "$CLEAN_OUT" ]; then
+  echo "PASS: clean input emits nothing (original output preserved)"
+else
+  echo "FAIL: clean input produced output (would wrongly replace benign result): ${CLEAN_OUT:0:120}"
   FAIL=1
 fi
 
