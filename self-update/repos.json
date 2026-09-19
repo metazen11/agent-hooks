@@ -1,0 +1,15 @@
+{
+  "_comment": "Repos self-update keeps current. Fast-forward only; any dirty tree, wrong branch, or divergence is skipped untouched. 'branch' is the branch that must be checked out for an update to happen.",
+  "repos": [
+    {
+      "slug": "agent-hooks",
+      "path": "~/_CODING/hooks",
+      "branch": "dev"
+    },
+    {
+      "slug": "agent-memory",
+      "path": "~/_CODING/agentMemory",
+      "branch": "dev"
+    }
+  ]
+}

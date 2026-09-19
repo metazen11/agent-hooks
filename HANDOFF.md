@@ -36,3 +36,14 @@
 - Branch: `main`
 - No code changes made to the hooks project itself
 - All hooks (env-guard, git-session, memory-context, pre-commit) are unchanged and working
+
+## 2026-07-15 — self-improve hook: fixed idle-spam
+Added: hooks/self-improve/ (PostToolUse odometer + Stop nudge for tool-extraction & sprint-close).
+BUG caught in the field (DailyDispatch session): Stop nudge re-fired on every idle turn (6x spam),
+because it read whole-tree `git status` and never debounced. FIX:
+  - Debounce: nudge at most ONCE per session (persist `nudged` flag; stop deleting state on Stop).
+  - Activity gate: only nudge if this session ran >=3 MUTATING tools (Edit/Write/NotebookEdit/MultiEdit).
+    A conversational/idle turn (0 mutations) stays silent even with pre-existing uncommitted changes.
+  - Rule B raised to require >=3 edits so a one-line fix never trips it.
+Verified: idle→silent, substantive→fires once, 2nd Stop same session→silent. Global (all repos); safe
+now that it's debounced+activity-gated. Wired in ~/.claude/settings.json (PostToolUse + Stop).
