@@ -301,6 +301,42 @@ Other agents (Codex, Anvil, future Claude sessions) read code cold. They lack th
 
 ---
 
+## §11 — Subagent Isolation
+
+**Enforcement:** judgment (mechanical stub possible via git hook).
+
+### Obligations
+- When the orchestrator delegates work to a subagent that will **write** files (Write, Edit, NotebookEdit) or run mutating commands, the subagent **MUST** operate in an isolated git worktree, container, or ephemeral copy of the repo — not the orchestrator's live working directory.
+- Read-only subagents (Explore, code-reviewer in read-only mode, security-auditor) **MAY** operate in the orchestrator's working directory since they cannot mutate state.
+- The orchestrator **MUST** merge each subagent's result into the *working branch* (feature branch, session branch, or dev branch — never directly into `main`/`master`/`prod`) as a discrete commit or PR, so contributions are:
+  1. **Reviewable independently** — one subagent's work can be reverted without touching another's
+  2. **Auditable** — the merge history shows which subagent produced which change
+  3. **Race-free** — parallel subagent writes cannot corrupt shared files
+- Parallel subagents whose write scopes might overlap **MUST** be given non-overlapping path scopes in their prompt, and **MUST** run in separate worktrees.
+
+### Exceptions
+- Single-subagent delegations where no parallelism exists and the subagent writes a bounded, disjoint set of files (rule of thumb: <5 files, no shared config edits) **MAY** operate in the orchestrator's working directory.
+- Interactive tools (Bash for read-only inspection, Grep, Read) that do not mutate state.
+- Trivial one-shot subagent invocations (<3 tool calls) where worktree overhead dominates.
+
+### Evidence of Compliance
+- Subagent invocations for write-work use `isolation: "worktree"` when the harness supports it, or the prompt explicitly instructs the subagent to work in a designated ephemeral path.
+- Merges into the working branch happen through explicit orchestrator action (`git merge`, `git cherry-pick`, or PR), not through direct subagent writes to the shared tree.
+- The working branch is never `main`, `master`, or `prod` — always a feature branch, session branch, or `dev`.
+
+### Consequences of Breach
+- Parallel subagents corrupt shared files — the orchestrator MUST detect the conflict via `git status` before continuing.
+- Reviewer cites `§11` and requests a rewrite of the delegation to use isolation.
+- Direct writes to `main`/`master`/`prod` from a subagent are treated as a critical breach; the orchestrator MUST revert and re-run through the proper working-branch flow.
+
+### Corollary — Branch Discipline
+- All new work lands on a feature/session branch first.
+- Feature branches merge into `dev` (or the operator's designated working integration branch).
+- `dev` → `main`/`prod` is a reviewed, gated promotion (PR + tests + optional operator approval).
+- The orchestrator **MUST NOT** short-circuit this chain by pushing directly to `main` or by merging to `dev` without at least self-review (running the code-reviewer specialist per §10).
+
+---
+
 ## Adding New Sections
 
 New sections **MUST**:
