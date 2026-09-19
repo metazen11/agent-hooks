@@ -17,6 +17,7 @@ The contract is authoritative and cross-agent. It contains numbered sections (§
 - **§8** — Documentation in Code
 - **§9** — Orchestrator Posture (delegate to subagents; don't execute what can be parallelized)
 - **§10** — Specialization Routing (pick the best-fit specialist agent; general-purpose is a fallback)
+- **§11** — Subagent Isolation (write-work in isolated worktrees; merge to working branch, never direct to main)
 
 ### How to comply
 
