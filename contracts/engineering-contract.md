@@ -321,8 +321,8 @@ Other agents (Codex, Anvil, future Claude sessions) read code cold. They lack th
 
 ### Evidence of Compliance
 - Subagent invocations for write-work use `isolation: "worktree"` when the harness supports it, or the prompt explicitly instructs the subagent to work in a designated ephemeral path.
-- Merges into the working branch happen through explicit orchestrator action (`git merge`, `git cherry-pick`, or PR), not through direct subagent writes to the shared tree.
-- The working branch is never `main`, `master`, or `prod` — always a feature branch, session branch, or `dev`.
+- Reconciliation into the current working branch happens through explicit orchestrator action (`git merge`, `git cherry-pick`, or PR), not through direct subagent writes to the shared tree.
+- The "current working branch" is whatever branch the orchestrator was on when the session started — it is never `main`, `master`, or `prod`. If the orchestrator finds itself on a protected branch, it MUST create a session branch first (the `git-session` hook does this automatically at SessionStart).
 
 ### Consequences of Breach
 - Parallel subagents corrupt shared files — the orchestrator MUST detect the conflict via `git status` before continuing.
