@@ -330,10 +330,11 @@ Other agents (Codex, Anvil, future Claude sessions) read code cold. They lack th
 - Direct writes to `main`/`master`/`prod` from a subagent are treated as a critical breach; the orchestrator MUST revert and re-run through the proper working-branch flow.
 
 ### Corollary — Branch Discipline
-- All new work lands on a feature/session branch first.
-- Feature branches merge into `dev` (or the operator's designated working integration branch).
+- All new work lands on the current working branch (session or feature branch) first.
+- The working branch is reconciled into `dev` (or the operator's designated integration branch) via a reviewed merge.
 - `dev` → `main`/`prod` is a reviewed, gated promotion (PR + tests + optional operator approval).
 - The orchestrator **MUST NOT** short-circuit this chain by pushing directly to `main` or by merging to `dev` without at least self-review (running the code-reviewer specialist per §10).
+- The reconciliation target is always the *current working branch* — inferred from `git branch --show-current` — not a hardcoded branch name. Repos vary; the branch on disk is the source of truth.
 
 ---
 
