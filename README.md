@@ -49,6 +49,21 @@ git commit --no-verify
 
 ## Agent Hooks
 
+### contracts
+
+Cross-agent engineering contract enforcer. Installs a canonical, numbered rulebook (`engineering-contract.md`) and its mechanical checks so Claude Code, Anvil, Codex, and Gemini all obey the same rules. The PreToolUse hook blocks Write/Edit/Bash violations of §1 (hardcoding), §3 (symptom suppression), §6 (AI attribution), and §7 (destructive operations). Judgment sections (§2, §4, §5, §8) are enforced in code review. Every rule is citable as `CONTRACT §N`.
+
+```bash
+cd contracts
+node install.js              # Interactive wizard
+node install.js --all        # All detected agents
+node install.js --uninstall  # Remove all
+```
+
+Supports: **Claude Code** (PreToolUse hook, deterministic), **Anvil** (CONTRACTS.md instruction), **Codex** (AGENTS.md instruction), **Gemini** (GEMINI.md instruction).
+
+See [`contracts/README.md`](contracts/README.md) for full documentation.
+
 ### quality-gate
 
 Three-layer engineering quality gate: JSON Schema contract, validators (Python + Node.js), git pre-commit hook, and GitHub Action CI. Validates agent-produced plans before commit and merge.
