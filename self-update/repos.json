@@ -10,6 +10,11 @@
       "slug": "agent-memory",
       "path": "~/_CODING/agentMemory",
       "branch": "dev"
+    },
+    {
+      "slug": "anvil",
+      "path": "~/_CODING/anvil",
+      "branch": "dev"
     }
   ]
 }
