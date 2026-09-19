@@ -308,7 +308,7 @@ Other agents (Codex, Anvil, future Claude sessions) read code cold. They lack th
 ### Obligations
 - When the orchestrator delegates work to a subagent that will **write** files (Write, Edit, NotebookEdit) or run mutating commands, the subagent **MUST** operate in an isolated git worktree, container, or ephemeral copy of the repo — not the orchestrator's live working directory.
 - Read-only subagents (Explore, code-reviewer in read-only mode, security-auditor) **MAY** operate in the orchestrator's working directory since they cannot mutate state.
-- The orchestrator **MUST** merge each subagent's result into the *working branch* (feature branch, session branch, or dev branch — never directly into `main`/`master`/`prod`) as a discrete commit or PR, so contributions are:
+- The orchestrator **MUST** reconcile each subagent's worktree into the *current working branch* — the branch the orchestrator was on when the delegation started (a session branch, a feature branch, or `dev` — but never directly into `main`/`master`/`prod`) — as a discrete commit or merge, so contributions are:
   1. **Reviewable independently** — one subagent's work can be reverted without touching another's
   2. **Auditable** — the merge history shows which subagent produced which change
   3. **Race-free** — parallel subagent writes cannot corrupt shared files
