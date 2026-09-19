@@ -39,7 +39,14 @@ const { execFileSync } = require('child_process');
 
 const HOME = os.homedir();
 const STATE_DIR = path.join(HOME, '.claude', 'state', 'self-update');
-const INTERVAL_HOURS = Math.max(0, parseFloat(process.env.SELF_UPDATE_EVERY_HOURS) || 24);
+// NOTE: `parseFloat(x) || 24` is WRONG here — parseFloat('0') is 0, which is
+// falsy, so an explicit 0 ("always check") silently became 24. Parse strictly.
+const INTERVAL_HOURS = (() => {
+    const raw = process.env.SELF_UPDATE_EVERY_HOURS;
+    if (raw === undefined || raw === '') return 24;
+    const n = parseFloat(raw);
+    return Number.isFinite(n) && n >= 0 ? n : 24;
+})();
 
 // ── git helpers ──────────────────────────────────────────────
 
