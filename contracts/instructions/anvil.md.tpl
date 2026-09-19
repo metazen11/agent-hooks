@@ -17,6 +17,7 @@ The contract is authoritative and cross-agent (Claude, Codex, Gemini, Anvil). It
 - **§8** — Documentation in Code
 - **§9** — Orchestrator Posture
 - **§10** — Specialization Routing
+- **§11** — Subagent Isolation
 
 ### How to comply (Anvil)
 
