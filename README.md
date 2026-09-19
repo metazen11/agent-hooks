@@ -209,6 +209,39 @@ node install.js --uninstall
 
 See [`hf-launch-gate/README.md`](hf-launch-gate/README.md) for the full decision matrix. Run `hf-launch-gate/test-hf-launch-gate.sh` for the 25-case self-test.
 
+### iron-rules
+
+Injects non-negotiable engineering rules (root cause, TDD, DRY, simplest,
+verify, push-back) into context at session start and every Nth user turn.
+Deterministic where markdown guidance gets skipped on autopilot.
+
+Rules text lives in `iron-rules/IRON-RULES.md`, not in code — the hook parses
+its `## Digest` section, so editing the rules is a document change.
+
+- Events: `SessionStart`, `UserPromptSubmit`
+- Cadence: `IRON_RULES_EVERY` (default 10)
+- Install: `node iron-rules/install.js [--every N]`
+- Tests: `./iron-rules/test-iron-rules.sh` (12 cases)
+
+Never blocks; always exits 0; degrades to silence on any failure.
+
+### self-update
+
+Tells you when watched repos have new commits upstream. **Notify-only** — it
+fetches read-only and prints the exact `git merge --ff-only` command; it does
+not merge on its own.
+
+Even with an explicit `--apply` it is fast-forward only, and refuses on a
+dirty tree, wrong branch, missing upstream, diverged history, or an
+in-progress rebase/merge/bisect.
+
+- Event: `SessionStart`
+- Watched repos: `self-update/repos.json`
+- Throttle: `SELF_UPDATE_EVERY_HOURS` (default 24; `0` = always check)
+- Install: `node self-update/install.js [--hours N]`
+- Manual: `node self-update/self-update.js --check | --apply --now`
+- Tests: `./self-update/test-self-update.sh` (14 cases)
+
 ### memory-context (legacy)
 
 Injects recent claude-mem observations into session context on startup. Queries the local SQLite database for the 3 most recent memories matching the current project.
