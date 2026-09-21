@@ -1,38 +1,51 @@
 # Session Handoff
 
-**Last updated:** 2026-02-10
+**Last updated:** 2026-09-20
 
-## What Happened This Session
+## Current Task: `iron-rules` package (design agreed, not yet built)
 
-### Investigated: Python Crash Storm (26+ segfaults)
+Goal: enforce iron coding rules across Claude Code, Codex, and Anvil via one hook,
+with a single machine-readable source of truth and a contract-acknowledgment gate.
 
-**Problem:** 26+ Python process crashes (SIGSEGV) on Feb 9-10, all generating macOS crash reports in `~/Library/Logs/DiagnosticReports/`.
+### Key findings from last session
+- Codex `~/.codex/hooks.json` uses the identical hook protocol as Claude Code
+  (same events, stdin/stdout JSON). One Node script serves both.
+- Anvil uses a Python middleware stack; plan-refiner already shells out from a thin
+  middleware to the Node script. Repeat that pattern generically.
+- agent-memory lessons already inject pre-tool and per-turn (self-improvement channel).
+- Rules currently drift across 3 places: `~/.claude/skills/autonomous/skill.md`,
+  `anvil/coding_principles.md`, and the synced CLAUDE.md pack
+  (source: `/Users/mz/_CODING/autonomous_agents_mds/scripts/sync_prompt_pack.py`).
 
-**Root Cause:** The `claude-mem` plugin (thedotmack, v10.0.1) uses ChromaDB 1.5.0 for vector/semantic search. ChromaDB's Rust bindings (`chromadb_rust_bindings.abi3.so`) have a thread-safety bug:
-- Multiple tokio-runtime-worker threads contend on `std::__1::mutex::lock()` inside the Rust bindings
-- One thread accesses a freed object (null pointer dereference at offset 0xcc)
-- The process is spawned by `uv` using Python 3.13
+### Design
+1. `iron-rules.json` in the autonomous_agents_mds prompt pack (synced like CLAUDE.md).
+   Rule fields: id, mode (block|warn|remind), event, match (tool+glob+regex), message.
+   Mechanical rules (naming, secrets, file placement) -> block/warn at PreToolUse.
+   Judgment rules (DRY, simplicity) -> remind only, routed to code-reviewer agent.
+   Render CLAUDE.md / AGENTS.md / coding_principles.md sections from this file.
+2. `iron-rules.js` hook: reads stdin, loads rules (+ project `.iron-rules.json`
+   overrides), returns deny or systemMessage. Lift naming checks out of `pre-commit`
+   into a shared module used at both edit time and commit time.
+3. Cadence reminder: UserPromptSubmit rule with per-session turn counter; every N turns
+   inject <400-char checkpoint (rules digest, delegate, recall memory, update todo/HANDOFF).
+   Stop rule: warn if files changed but todo.json / HANDOFF.md untouched.
+4. Contract gate (proof of reading): SessionStart injects "run `iron-rules contract read`".
+   That prints the contract + HMAC token (content hash + per-machine secret).
+   PreToolUse on Edit/Write/Bash denies until `iron-rules contract ack <token>` recorded
+   for (session_id, content hash). Reads/Grep/Glob never blocked. Escape-hatch env var.
+5. Self-improvement: agent-memory lesson -> skill-promoter weekly -> PR adding rule to
+   iron-rules.json. Human approves PR.
 
-**Evidence:**
-- Every single crash report (26+) shows `chromadb_rust_bindings.abi3.so` as the faulting image
-- Crash threads vary (28-38), confirming concurrency issue
-- `~/.claude-mem/vector-db/chroma.sqlite3` is 379MB and was returning `database is locked`
-- Worker logs show `Chroma connection lost: MCP error -32000: Connection closed` after crashes
+### Build order
+1. iron-rules.json schema + render step into the three doc targets
+2. iron-rules.js with naming + secrets rules in warn mode (flip to block after a week)
+3. Contract gate
+4. Turn-counter reminder + Stop docs check
+5. Lesson-to-rule promotion routine
 
-**Fix Applied:**
-- Changed `CLAUDE_MEM_PYTHON_VERSION` from `"3.13"` to `"3.12"` in `~/.claude-mem/settings.json`
-- Killed worker daemon (PID 10552) so it restarts with new config
-
-**If crashes continue on Python 3.12:**
-- Move `~/.claude-mem/vector-db/` aside to disable ChromaDB entirely (plugin falls back to SQLite-only search)
-- Consider filing issue with claude-mem plugin author (thedotmack)
-- Relevant upstream issues:
-  - https://github.com/chroma-core/chroma/issues/675 (segfault with concurrent requests)
-  - https://github.com/chroma-core/chroma/issues/5937 (Rust bindings hang)
-  - https://github.com/chroma-core/chroma/issues/3651 (Python 3.13 compatibility)
+Package layout: mirror `plan-refiner/` (install.js multi-agent wizard, instructions/*.tpl,
+README.md, SKILL.md, test.js).
 
 ## Project State
-
-- Branch: `main`
-- No code changes made to the hooks project itself
-- All hooks (env-guard, git-session, memory-context, pre-commit) are unchanged and working
+- Branch: `work/session-20260221`
+- Uncommitted: `env-guard/env-guard.js` (pre-existing modification, not from this task)
