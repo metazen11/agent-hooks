@@ -420,6 +420,20 @@ async function main() {
   }
 
   const projectDir = opts.project ? path.resolve(opts.project) : process.cwd();
+
+  // Guard: running the installer from inside the package would treat the
+  // package itself as the target project and write instruction files into
+  // it. Those belong in each consuming project. Refuse instead.
+  if (projectDir === PACKAGE_DIR) {
+    console.error('');
+    console.error('  Refusing to install into the package directory itself.');
+    console.error('  Instruction files belong in the consuming project.');
+    console.error('');
+    console.error(`  Run from the target repo, or pass --project=/path/to/repo`);
+    console.error('');
+    process.exit(1);
+  }
+
   const detected = detectAgents(projectDir);
 
   let agents;
