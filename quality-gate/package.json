@@ -1,0 +1,23 @@
+{
+  "name": "quality-gate",
+  "version": "1.0.0",
+  "description": "Three-layer engineering quality gate: JSON Schema contract, validators, git hook, and CI integration",
+  "author": "mz",
+  "license": "MIT",
+  "scripts": {
+    "install-gate": "node install.js",
+    "test": "node test.js"
+  },
+  "keywords": [
+    "quality-gate",
+    "json-schema",
+    "pre-commit",
+    "ci",
+    "engineering",
+    "plans",
+    "claude-code",
+    "codex",
+    "gemini",
+    "anvil"
+  ]
+}

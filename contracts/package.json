@@ -1,0 +1,32 @@
+{
+  "name": "contracts",
+  "version": "0.1.0",
+  "description": "Cross-agent engineering contract enforcer. Installs a numbered, citable rulebook with mechanical checks that block Write/Edit/Bash violations of §1 (hardcoding), §3 (symptom suppression), §6 (AI attribution), and §7 (destructive operations). Supports Claude Code, Anvil, Codex, and Gemini.",
+  "author": "mz",
+  "license": "MIT",
+  "scripts": {
+    "install-hooks": "node install.js",
+    "uninstall-hooks": "node install.js --uninstall",
+    "test": "node test.js"
+  },
+  "files": [
+    "contracts-hook.js",
+    "engineering-contract.md",
+    "install.js",
+    "checks/",
+    "instructions/",
+    "README.md",
+    "SKILL.md"
+  ],
+  "keywords": [
+    "engineering-contract",
+    "contract",
+    "hooks",
+    "quality-gate",
+    "claude-code",
+    "anvil",
+    "codex",
+    "gemini",
+    "ai-agents"
+  ]
+}
