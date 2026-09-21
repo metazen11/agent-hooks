@@ -118,6 +118,39 @@ expected=$((before + 1))
 assert_eq "control: checkpoint added on plain Edit" "$expected" "$after"
 rm -rf "$repo"
 
+# ── case 5: mid-merge inside a WORKTREE → skip checkpoint ──
+# Regression: `rev-parse --git-dir` returns an ABSOLUTE path inside a
+# worktree, and path.join(cwd, absoluteGitDir) silently yields a bogus
+# path, so the MERGE_HEAD check failed open and the hook committed
+# mid-merge with conflict markers in the tree.
+echo "Case 5: MERGE_HEAD inside a worktree → skip checkpoint"
+repo="$(setup_repo)"
+# Build a conflict on a side branch.
+git -C "$repo" checkout -q -b side
+echo "side" >"$repo/file.txt"
+git -C "$repo" commit -qam "side"
+git -C "$repo" checkout -q master 2>/dev/null || git -C "$repo" checkout -q main
+echo "trunk" >"$repo/file.txt"
+git -C "$repo" commit -qam "trunk"
+# A linked worktree is where git-dir goes absolute.
+wt="$(mktemp -d -t agent-hooks-wt-XXXXXX)"; rm -rf "$wt"
+git -C "$repo" worktree add -q "$wt" side
+git -C "$wt" merge master -q 2>/dev/null || git -C "$wt" merge main -q 2>/dev/null || true
+# Age past the 10s recent-switch window so MERGE_HEAD is the guard under test,
+# not the reflog cooldown (which would mask a broken MERGE_HEAD check).
+sleep 11
+if [[ -f "$wt/.git" ]] && git -C "$wt" rev-parse --verify -q MERGE_HEAD >/dev/null; then
+    before="$(commit_count "$wt")"
+    printf '{"cwd":"%s","tool_name":"Edit","tool_input":{"file_path":"%s/file.txt"}}' "$wt" "$wt" \
+        | node "$HOOK" --pre-edit >/dev/null
+    after="$(commit_count "$wt")"
+    assert_eq "no checkpoint while mid-merge in a worktree" "$before" "$after"
+else
+    echo "  SKIP  could not stage a worktree mid-merge state"
+fi
+git -C "$repo" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+rm -rf "$repo"
+
 # ── summary ─────────────────────────────────────────────────────────────
 echo
 echo "Results: $PASS passed, $FAIL failed"

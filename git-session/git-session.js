@@ -865,7 +865,11 @@ function handlePreEdit(hookInput) {
     ];
     for (const marker of inProgressMarkers) {
         try {
-            if (require('fs').existsSync(require('path').join(cwd, gitDir, marker))) {
+            // path.resolve, not path.join: inside a linked worktree
+            // `rev-parse --git-dir` returns an ABSOLUTE path, and join()
+            // would concatenate it onto cwd, yielding a path that never
+            // exists — the guard would fail open and checkpoint mid-merge.
+            if (require('fs').existsSync(require('path').resolve(cwd, gitDir, marker))) {
                 log(`Skipping checkpoint - git operation in progress (${marker})`);
                 return outputResult('PreToolUse', {});
             }
