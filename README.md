@@ -4,8 +4,42 @@ Git hooks and agent hooks for development workflows.
 
 ## Installation
 
+### On a new machine
+
 ```bash
-./hooks/install.sh
+git clone https://github.com/metazen11/agent-hooks.git ~/_CODING/hooks
+cd ~/_CODING/hooks
+
+# Install a Claude Code hook: each directory is self-contained.
+node iron-rules/install.js          # engineering-rule reminders
+node self-update/install.js         # notifies when this repo is behind
+
+# See what a hook does / how to configure it first:
+cat iron-rules/README.md
+node iron-rules/install.js --help
+```
+
+Each installer symlinks the hook into `~/.claude/hooks/` and wires the entry in
+`~/.claude/settings.json`. **Restart Claude Code afterwards** — hooks load at
+session start. Pass `--no-wire` to symlink without touching settings, and
+`--uninstall` to remove cleanly. Installers are idempotent: re-running one is
+safe.
+
+Strict-block gates (`reconcile-gate`, `hf-launch-gate`, `dispatch-gate`,
+`worktree-write-guard`) default to symlink-only and require an explicit
+`--wire`, because enabling something that can refuse a tool call is an
+operator decision.
+
+### Staying current
+
+`self-update` checks (read-only) at session start and tells you when this repo
+is behind, with the command to update. It never merges on its own. See
+[self-update/README.md](self-update/README.md).
+
+### Git hooks (separate)
+
+```bash
+./install.sh     # installs pre-commit etc. into .git/hooks of THIS repo
 ```
 
 ## Available Hooks
@@ -202,6 +236,54 @@ node install.js --uninstall
 ```
 
 See [`dispatch-gate/README.md`](dispatch-gate/README.md).
+
+### hf-launch-gate
+
+PreToolUse(`Bash`) hook that **refuses a paid Hugging Face Jobs launch** (`hf jobs run`, `hf jobs uv run`, or a launcher script invoked WITH `--launch`) unless process preconditions are met: an approved originating GitHub issue with acceptance criteria + a recorded auditor PASS. Enforces AC6 on [metazen11/agent-memory#55](https://github.com/metazen11/agent-memory/issues/55) — an agent nearly launched a paid GPU job with no issue and no audit, on self-certification. Dry-runs (launcher without `--launch`) and read-only subcommands (`hf jobs logs|inspect|ls|ps|cancel`) are NOT blocked. **Fails SAFE** (blocks on error/undeterminable state — a paid job is the blast radius). Override with `--force-anyway` or `HF_LAUNCH_APPROVED=<issue#>` (both logged).
+
+**Available but not wired by default** — wiring a strict-block gate is an operator decision (and avoids changing hook behavior mid-session).
+
+```bash
+cd hf-launch-gate
+node install.js            # symlink only (available, INACTIVE)
+node install.js --wire     # also add the PreToolUse(Bash) settings entry
+node install.js --uninstall
+```
+
+See [`hf-launch-gate/README.md`](hf-launch-gate/README.md) for the full decision matrix. Run `hf-launch-gate/test-hf-launch-gate.sh` for the 25-case self-test.
+
+### iron-rules
+
+Injects non-negotiable engineering rules (root cause, TDD, DRY, simplest,
+verify, push-back) into context at session start and every Nth user turn.
+Deterministic where markdown guidance gets skipped on autopilot.
+
+Rules text lives in `iron-rules/IRON-RULES.md`, not in code — the hook parses
+its `## Digest` section, so editing the rules is a document change.
+
+- Events: `SessionStart`, `UserPromptSubmit`
+- Cadence: `IRON_RULES_EVERY` (default 10)
+- Install: `node iron-rules/install.js [--every N]`
+- Tests: `./iron-rules/test-iron-rules.sh` (12 cases)
+
+Never blocks; always exits 0; degrades to silence on any failure.
+
+### self-update
+
+Tells you when watched repos have new commits upstream. **Notify-only** — it
+fetches read-only and prints the exact `git merge --ff-only` command; it does
+not merge on its own.
+
+Even with an explicit `--apply` it is fast-forward only, and refuses on a
+dirty tree, wrong branch, missing upstream, diverged history, or an
+in-progress rebase/merge/bisect.
+
+- Event: `SessionStart`
+- Watched repos: `self-update/repos.json`
+- Throttle: `SELF_UPDATE_EVERY_HOURS` (default 24; `0` = always check)
+- Install: `node self-update/install.js [--hours N]`
+- Manual: `node self-update/self-update.js --check | --apply --now`
+- Tests: `./self-update/test-self-update.sh` (14 cases)
 
 ### memory-context (legacy)
 
