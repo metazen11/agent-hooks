@@ -35,6 +35,22 @@ cp "$SRC/workflows/trunk-drift.yml" .github/workflows/trunk-drift.yml
 cp "$SRC/workflows/contract-integrity.yml" .github/workflows/contract-integrity.yml
 [ -f CONTRIBUTING.md ] || cp "$SRC/CONTRIBUTING.md" CONTRIBUTING.md
 
+# README section — idempotent: only added when absent, so re-running never
+# duplicates it. The README is the file people actually open first; without a
+# pointer here the contract is invisible to anyone who does not know to look
+# in CONTRIBUTING.md.
+if [ -f README.md ] && ! grep -q '^## Branching contract' README.md; then
+    python3 - "$SRC/README-section.md" <<'PYEOF'
+import re, sys, pathlib
+sec = pathlib.Path(sys.argv[1]).read_text().rstrip() + "\n"
+p = pathlib.Path("README.md"); s = p.read_text()
+m = list(re.finditer(r"^## ", s, re.M))
+idx = m[1].start() if len(m) >= 2 else (m[0].start() if m else len(s))
+p.write_text(s[:idx] + sec + "\n" + s[idx:])
+PYEOF
+    echo "  ✓ README.md (branching contract section)"
+fi
+
 git config core.hooksPath .githooks
 
 echo "  ✓ .githooks/pre-push"
