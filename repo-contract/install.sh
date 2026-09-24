@@ -32,6 +32,7 @@ mkdir -p .githooks .github/workflows
 cp "$SRC/githooks/pre-push" .githooks/pre-push
 chmod +x .githooks/pre-push
 cp "$SRC/workflows/trunk-drift.yml" .github/workflows/trunk-drift.yml
+cp "$SRC/workflows/contract-integrity.yml" .github/workflows/contract-integrity.yml
 [ -f CONTRIBUTING.md ] || cp "$SRC/CONTRIBUTING.md" CONTRIBUTING.md
 
 git config core.hooksPath .githooks
