@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# post-checkout — auto-activate a repo's versioned hooks on clone.
+#
+# Installed as a GIT TEMPLATE (see repo-contract/install-template.sh), so it is
+# copied into .git/hooks/ of every NEW clone on this machine. On the first
+# checkout it points core.hooksPath at the repo's own .githooks/ directory —
+# turning "one command per clone" into "one command per machine".
+#
+# WHY THIS IS NOT A SECURITY HOLE: the template lives on YOUR machine and you
+# installed it deliberately. Git refuses to let a *cloned repo* activate its own
+# hooks precisely because that would execute a stranger's code on clone. This
+# inverts that safely — the decision is yours, made once, locally.
+#
+# Behaviour:
+#   · repo HAS .githooks/       -> set core.hooksPath, announce it
+#   · repo has NO .githooks/    -> silent no-op, exit 0
+#   · core.hooksPath already set -> leave it alone (never override a choice)
+#
+# Always exits 0. A broken bootstrap must never break a clone or a checkout.
+
+set -uo pipefail
+
+# Only act on a branch checkout that follows a clone/initial checkout.
+# Args: <prev-head> <new-head> <is-branch-checkout>
+[ "${3:-0}" = "1" ] || exit 0
+
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[ -n "$root" ] || exit 0
+[ -d "$root/.githooks" ] || exit 0
+
+# Respect an explicit existing choice.
+if current="$(git config --get core.hooksPath 2>/dev/null)" && [ -n "$current" ]; then
+    exit 0
+fi
+
+git config core.hooksPath .githooks 2>/dev/null || exit 0
+echo "  ✓ branching contract active: core.hooksPath -> .githooks"
+echo "    (see CONTRIBUTING.md; unset with: git config --unset core.hooksPath)"
+exit 0
