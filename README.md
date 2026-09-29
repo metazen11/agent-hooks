@@ -278,6 +278,35 @@ node install.js --uninstall
 
 See [`hf-launch-gate/README.md`](hf-launch-gate/README.md) for the full decision matrix. Run `hf-launch-gate/test-hf-launch-gate.sh` for the 25-case self-test.
 
+### lib/ — shared transcript reader
+
+`lib/transcript.js` counts real user turns for the hooks that throttle by turn
+(`iron-rules`, `context-primer`).
+
+It exists because the logic was duplicated and a bug fixed in one copy did not
+reach the other: `iron-rules` stopped counting tool results as user turns on
+2026-09-19; `context-primer` kept counting them for another week. Claude Code
+writes every TOOL RESULT as a `"type":"user"` line, so a naive count overruns
+real prompts ~9x and non-uniformly.
+
+It also streams the file in 1 MiB chunks and caches the count by
+(inode, size, prefix-fingerprint), instead of reading the whole transcript on
+every turn:
+
+| | time | RSS |
+|---|---|---|
+| old full read | 130 ms | 275 MB |
+| new, cold | 124 ms | 109 MB |
+| **new, live session (append)** | **0.6 ms** | **42 MB** |
+
+Measured on a 51 MB transcript; all three agree on the same count.
+
+Hooks degrade to silence if `lib/` is absent — they never crash — but the
+per-turn throttle stops working, so keep `lib/` alongside the hook directory.
+The installers check for it and warn.
+
+Tests: `./lib/test-transcript.sh` (16 cases).
+
 ### iron-rules
 
 Injects non-negotiable engineering rules (root cause, TDD, DRY, simplest,

@@ -253,25 +253,22 @@ function isPrimed(input, cwd) {
  * transcript is unavailable.
  */
 function countUserTurns(transcriptPath) {
-    if (!transcriptPath || !safeExists(transcriptPath)) return 0;
-    let count = 0;
+    // Delegated to lib/transcript.js. This function used to readFileSync the
+    // WHOLE transcript and split it on every UserPromptSubmit — 275MB RSS on a
+    // 51MB file — and it counted every `"type":"user"` line, including TOOL
+    // RESULTS and isMeta lines. That overcounts real prompts ~9x and
+    // non-uniformly (the excess tracks how many tools the last turn used), so
+    // REPRIME_EVERY=50 was firing in bursts rather than every 50 turns.
+    //
+    // iron-rules.js was fixed for the counting bug on 2026-09-19; this copy
+    // was not, because the logic was duplicated. Hence the shared module.
+    let lib = path.join(__dirname, '..', 'lib', 'transcript.js');
+    try { lib = fs.realpathSync(lib); } catch { /* use as-is */ }
     try {
-        const text = fs.readFileSync(transcriptPath, 'utf8');
-        for (const line of text.split('\n')) {
-            // Fast pre-filter before JSON.parse to keep this hot path light.
-            if (line.indexOf('"type":"user"') === -1 && line.indexOf('"type": "user"') === -1) {
-                continue;
-            }
-            try {
-                if (JSON.parse(line).type === 'user') count++;
-            } catch {
-                // ignore malformed line
-            }
-        }
+        return require(lib).countUserTurns(transcriptPath);
     } catch {
-        return 0;
+        return 0;   // a missing lib must not break the session
     }
-    return count;
 }
 
 // ── Mode: SessionStart (prime once) ──────────────────────────
