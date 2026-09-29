@@ -183,9 +183,20 @@ function removeEntries() {
 
 // ── Install / Uninstall ──────────────────────────────────────
 
+/** Warn if the shared transcript reader is missing (turn throttle needs it). */
+function checkSharedLib() {
+    const lib = path.join(PACKAGE_DIR, '..', 'lib', 'transcript.js');
+    if (fs.existsSync(lib)) { ok(`shared lib found: ${path.relative(HOME, lib)}`); return; }
+    warn('lib/transcript.js NOT found next to this hook.');
+    warn('  The hook still runs, but the per-turn throttle degrades to silent —');
+    warn('  it can only inject at session start. Copy the repo\'s lib/ alongside');
+    warn('  iron-rules/, or install from a full clone.');
+}
+
 function install(wire, every) {
     console.log('\niron-rules — installing' + (wire ? ' (+ wiring)' : ' (symlink only)'));
     console.log('─'.repeat(52));
+    checkSharedLib();
     ensureDir(HOOKS_DIR);
     for (const f of HOOK_FILES) {
         symlink(path.join(PACKAGE_DIR, f), path.join(HOOKS_DIR, f));

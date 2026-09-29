@@ -60,36 +60,22 @@ function readDigest(file) {
 }
 
 /**
- * Count REAL user turns in the transcript.
+ * Count REAL user turns — delegated to the shared reader.
  *
- * Claude Code writes every TOOL RESULT as a `"type":"user"` line, and injects
- * `isMeta` lines of its own. A naive count of `type:"user"` therefore overcounts
- * badly and NON-UNIFORMLY — measured on a real 50MB transcript: 2251 lines vs
- * 243 actual prompts (9.3x), advancing by however many tools the last turn used.
- * That made the throttle fire three turns in a row, then go silent for 31.
- *
- * So: a line counts only when it is type "user", carries NO toolUseResult, and
- * is not isMeta. Returns 0 when unavailable, making the caller a no-op rather
- * than firing every turn.
+ * Was a local full-file read: 275MB RSS on a 51MB transcript, on EVERY turn,
+ * alongside context-primer doing the same on the same turn. lib/transcript.js
+ * streams in 1MiB chunks and caches the count by (inode, size), so a live
+ * session pays ~0.6ms / 42MB for the appended bytes instead. It also owns the
+ * tool-result/isMeta exclusion, so that fix cannot drift between hooks again.
  */
 function countUserTurns(transcriptPath) {
-    if (!transcriptPath) return 0;
-    let text;
-    try { text = fs.readFileSync(transcriptPath, 'utf8'); } catch { return 0; }
-
-    let count = 0;
-    for (const line of text.split('\n')) {
-        // Fast pre-filter before JSON.parse to keep this hot path light.
-        if (line.indexOf('"type":"user"') === -1 && line.indexOf('"type": "user"') === -1) continue;
-        try {
-            const o = JSON.parse(line);
-            if (o.type !== 'user') continue;
-            if (o.toolUseResult !== undefined) continue;   // tool result, not a turn
-            if (o.isMeta) continue;                        // system-injected
-            count++;
-        } catch { /* malformed line */ }
+    let lib = path.join(__dirname, '..', 'lib', 'transcript.js');
+    try { lib = fs.realpathSync(lib); } catch { /* use as-is */ }
+    try {
+        return require(lib).countUserTurns(transcriptPath);
+    } catch {
+        return 0;   // a missing lib must not break the session
     }
-    return count;
 }
 
 function readStdin() {
