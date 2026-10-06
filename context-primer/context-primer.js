@@ -24,7 +24,9 @@
  *      It does NOT nag on every edit and does NOT re-fire on content changes —
  *      once SessionStart has primed the session, this gate is permanently quiet.
  *
- * Required files (discovered relative to the project root, see findProjectRoot):
+ * Required files (discovered relative to the project root, see findProjectRoot).
+ * CLAUDE.md files are EXCLUDED from injection — Claude Code loads them natively
+ * (see isNativelyLoaded); only the non-native files below are injected:
  *   - Project instruction files:  CLAUDE.md, AGENTS.md, GEMINI.md
  *   - Coding requirements:        coding_requirements.md, CONTRIBUTING.md,
  *                                 docs/coding-standards.md, .autonomous.json
@@ -155,8 +157,23 @@ function resolveRequiredFiles(cwd) {
             if (safeExists(abs)) found.push(abs);
         }
     }
-    // De-dup while preserving order.
-    return [...new Set(found)];
+    // De-dup while preserving order, then drop files Claude Code already loads.
+    return [...new Set(found)].filter((f) => !isNativelyLoaded(f, cwd));
+}
+
+/**
+ * Claude Code natively auto-loads every CLAUDE.md: ~/.claude/CLAUDE.md plus the
+ * CLAUDE.md in the cwd and each ancestor directory. Injecting those again just
+ * duplicates them in context (~13k tokens/session), so they are excluded from
+ * BOTH the injected content and the safety-net Read list. AGENTS.md, GEMINI.md,
+ * coding_requirements.md etc. are NOT auto-loaded and are still injected.
+ */
+function isNativelyLoaded(file, cwd) {
+    if (path.basename(file) !== 'CLAUDE.md') return false;
+    const dir = path.dirname(file);
+    if (dir === path.join(HOME, '.claude')) return true;
+    const rel = path.relative(dir, cwd);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
 function safeExists(p) {
