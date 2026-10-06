@@ -162,10 +162,12 @@ When two sections conflict, the *more specific* section wins. When still ambiguo
 - The prohibition applies regardless of who authored the change.
 
 ### Exceptions
-- None. This is an operator preference expressed as a hard rule.
+- None for attribution itself. This is an operator preference expressed as a hard rule.
+- One path-scoped carve-out for the **mechanical scan only**: Write/Edit calls targeting files inside the `contracts/` package directory (this document, `checks/`, `test.js`) are not content-scanned, because those files must quote the very patterns they forbid. Without it the contract could not be maintained except by bypass, which §3 forbids. The carve-out is resolved against the package's real path (symlinked installs collapse to it) and nothing outside the package is exempt. Bash commands are never exempt — a literal pattern on a command line is still denied; pass it through a file instead.
 
 ### Evidence of Compliance
 - `checks/s6-no-ai-attribution.js` passes on staged commit messages and file diffs.
+- `test.js` includes a regression pair, verified RED against the unexempted check: editing the check file and this document is allowed; the identical pattern landing in an unrelated file is still denied.
 - `git log` shows no AI-attribution trailers in operator's repos.
 
 ### Consequences of Breach
