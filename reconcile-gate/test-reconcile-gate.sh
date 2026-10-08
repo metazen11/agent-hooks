@@ -28,7 +28,7 @@ decision() {
     local payload
     # Escape double quotes for JSON embedding.
     cmd="${cmd//\"/\\\"}"
-    payload="{\"tool_name\":\"$tool_name\",\"tool_input\":{\"command\":\"$cmd\"}}"
+    payload="{\"tool_name\":\"$tool_name\",\"cwd\":\"${HOOK_CWD:-/}\",\"tool_input\":{\"command\":\"$cmd\"}}"
     echo "$payload" \
         | node "$HOOK" \
         | node -e 'let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
@@ -73,6 +73,46 @@ assert_decision "missing --base"          "deny"  "Bash" "gh pr create --head de
 assert_decision "no flags at all"         "deny"  "Bash" "gh pr create"
 assert_decision "main←main (silly)"       "deny"  "Bash" "gh pr create --base main --head main"
 assert_decision "dev←main (wrong way)"    "deny"  "Bash" "gh pr create --base dev --head main"
+
+echo
+echo "─── per-project override (.reconcile-gate.json on trunk) ─"
+PROJ="$(mktemp -d)"; NOGIT="$(mktemp -d)"; ORIGIN="$(mktemp -d)"; trap 'rm -rf "$PROJ" "$NOGIT" "$ORIGIN"' EXIT
+git init -q --bare -b main "$ORIGIN"
+G="git -C $PROJ -c user.email=t@t -c user.name=t"
+$G init -q -b main && $G remote add origin "$ORIGIN" && mkdir -p "$PROJ/sub/dir" && echo x > "$PROJ/f" && $G add f && $G commit -qm init && $G push -q origin main
+export HOOK_CWD="$PROJ/sub/dir"
+# commit_cfg <json>: commit the config on main (the only trusted location)
+commit_cfg() { echo "$1" > "$PROJ/.reconcile-gate.json"; $G add .reconcile-gate.json; $G commit -qm cfg; $G push -q origin main; }
+
+assert_decision "no config: feat→dev denied"               "deny"  "Bash" "gh pr create --base dev --head feat/x"
+echo '{"allowed":[{"base":"dev","head":"*"}]}' > "$PROJ/.reconcile-gate.json"
+assert_decision "UNCOMMITTED config is ignored"            "deny"  "Bash" "gh pr create --base dev --head feat/x"
+echo '{"allowed":[{"base":"dev","head":"*"}]}' > "$PROJ/.reconcile-gate.json"; $G add .reconcile-gate.json; $G commit -qm local-only
+assert_decision "LOCAL main only (not origin/main): ignored" "deny" "Bash" "gh pr create --base dev --head feat/x"
+$G update-ref refs/remotes/origin/main main
+assert_decision "FORGED origin/main (update-ref, unpushed): ignored" "deny" "Bash" "gh pr create --base dev --head feat/x"
+$G push -q origin main
+assert_decision "committed+pushed: feat→dev allowed (subdir)" "allow" "Bash" "gh pr create --base dev --head feat/x"
+assert_decision "concatenated -Bdev -Hfeat/x allowed"      "allow" "Bash" "gh pr create -Bdev -Hfeat/x"
+assert_decision "concatenated -Ro/r: override not applied" "deny"  "Bash" "gh pr create -Ro/r --base dev --head feat/x"
+assert_decision "committed: canonical main←dev still ok"   "allow" "Bash" "gh pr create --base main --head dev"
+assert_decision "NO cross-product: feat→main still denied" "deny"  "Bash" "gh pr create --base main --head feat/x"
+assert_decision "unlisted base still denied"               "deny"  "Bash" "gh pr create --base release --head feat/x"
+assert_decision "--repo other: override not applied"       "deny"  "Bash" "gh pr create --repo o/r --base dev --head feat/x"
+assert_decision "-R other: override not applied"           "deny"  "Bash" "gh pr create -R o/r --base dev --head feat/x"
+commit_cfg '{"allowed":[{"base":"dev","head":"work/x"}]}'
+assert_decision "specific head pair allowed"               "allow" "Bash" "gh pr create --base dev --head work/x"
+assert_decision "other head denied"                        "deny"  "Bash" "gh pr create --base dev --head work/y"
+commit_cfg '{not json'
+assert_decision "malformed committed config: fail closed"  "deny"  "Bash" "gh pr create --base dev --head feat/x"
+assert_decision "malformed config: canonical denied too"   "deny"  "Bash" "gh pr create --base main --head dev"
+commit_cfg '{"allowed":[{"base":"*","head":"*"}]}'
+assert_decision "wildcard base rejected: fail closed"      "deny"  "Bash" "gh pr create --base main --head feat/x"
+commit_cfg '{"allowedBases":["dev"]}'
+assert_decision "old/wrong schema: fail closed"            "deny"  "Bash" "gh pr create --base dev --head feat/x"
+echo '{"allowed":[{"base":"dev","head":"*"}]}' > "$NOGIT/.reconcile-gate.json"
+HOOK_CWD="$NOGIT" assert_decision "non-git dir w/ config: ignored" "deny" "Bash" "gh pr create --base dev --head feat/x"
+unset HOOK_CWD
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

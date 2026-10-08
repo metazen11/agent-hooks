@@ -1,6 +1,15 @@
 # Session Handoff
 
-**Last updated:** 2026-09-20
+**Last updated:** 2026-10-07
+
+## 2026-10-07 — reconcile-gate per-project override (landed via dev → main PR)
+
+- `reconcile-gate`: `.reconcile-gate.json` adds explicit `{base, head}` PR pairs (`head:"*"` = any). Read ONLY from `origin/main`/`origin/master` (remote-tracking, never working tree or local branches); ignored outside git and with `--repo/-R`; fails closed on bad JSON/schema. 33 tests.
+- `contracts` §7: destructive literals as *content* (heredoc/inline script) must go through Write/Edit — the §7 scan is over the raw Bash string. Obeyed, not evaded.
+- Earlier: §6 self-edit carve-out (`bec2ca4`).
+- **Open follow-ups:** (1) etrade needs its own `.reconcile-gate.json` merged to etrade `main` (override is inert until then); (2) root fix: make the §7 scan ignore heredoc bodies; (3) background review flagged "parser-differential" in the hand-rolled tokenizer vs `gh` flag parsing — unverified, investigate; (4) etrade hooks unification (`core.hooksPath` dead across worktrees, `install_wizard.sh` installs no hooks) — decided "unify into one entry point", not started.
+- Override trust: tracking ref must equal `git ls-remote origin` (5s timeout); offline/forged => defaults. Concatenated `-R/-B/-H` handled.
+
 
 ## Current Task: `iron-rules` package (design agreed, not yet built)
 
