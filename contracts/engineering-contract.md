@@ -186,6 +186,7 @@ When two sections conflict, the *more specific* section wins. When still ambiguo
   2. Produce a restorable backup or snapshot and verify it before proceeding.
 - Destructive operations include, non-exhaustively: `rm -rf`, `git reset --hard`, `git push --force`, `git branch -D`, `git checkout -- .`, `DROP TABLE`, `TRUNCATE`, database migrations that drop columns/tables, package downgrades, credential rotations, CI/CD pipeline modifications, and shared-infrastructure changes.
 - Operator authorization for one action does **not** authorize the same action in a new context. Scope of authorization matches scope of request.
+- The §7 scan is mechanical over the raw Bash command string, so a destructive literal that is only *content* (a heredoc body, an inline script, an `echo` into a file) is denied exactly like one that executes. Authors **MUST** write such content with the Write/Edit tools (or a scratchpad file the command reads) instead of embedding it in a Bash command. Authors **MUST NOT** obfuscate the literal, split it, or otherwise evade the scan; that is a §3 breach.
 
 ### Exceptions
 - Local, reversible operations on ephemeral working state (e.g., `rm` on generated artifacts already tracked by git).

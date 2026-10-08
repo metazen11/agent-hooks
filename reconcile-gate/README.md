@@ -13,6 +13,20 @@ Bypass: append `--force-anyway` anywhere in the command. The flag is visible in 
 
 All other Bash calls and all non-Bash tool calls pass through unchanged.
 
+## Per-project override
+
+A repo whose own contract defines a different PR flow (e.g. feature branch → `dev`) can add allowed pairs in `.reconcile-gate.json` at its root:
+
+```json
+{ "allowed": [{ "base": "dev", "head": "*" }] }
+```
+
+- Pairs are **added** to the defaults; `head: "*"` = any head. `base` may not be `"*"`. Pairs are explicit, so allowing feature → `dev` does not allow feature → `main`.
+- Trusted only when **committed on the production trunk** (remote-tracking `origin/main` or `origin/master`; local branches are agent-writable and ignored; the tracking ref must also equal the real remote via `git ls-remote`, so offline or forged refs fall back to the stricter defaults) — the working tree is never read, so widening needs a human-reviewed merge.
+- Ignored outside a git repo and when the command passes `--repo`/`-R`.
+- Fails closed: invalid JSON or schema denies every `gh pr create` in that repo.
+- `--force-anyway` remains the per-call escape.
+
 ## Why
 
 See the global `CLAUDE.md` → **Branching & Integration Process (CONTRACT)** section. Short version:
@@ -37,7 +51,7 @@ After install, restart Claude Code to activate.
 ./reconcile-gate/test-reconcile-gate.sh
 ```
 
-Runs 17 cases covering allow paths (canonical, alias, `=` form, bypass, non-Bash, lookalikes, short flags) and deny paths (feature head, feature base, missing flags, wrong direction).
+Runs 36 cases (including the per-project override) covering allow paths (canonical, alias, `=` form, bypass, non-Bash, lookalikes, short flags) and deny paths (feature head, feature base, missing flags, wrong direction).
 
 ## Decision matrix
 

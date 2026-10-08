@@ -20,6 +20,10 @@
  *   1. --base is the production trunk (main or master), AND
  *   2. --head is the integration trunk (dev or develop)
  *
+ * A repo may add allowed (base, head) pairs via `.reconcile-gate.json`
+ * committed on its production trunk (see README → Per-project override);
+ * a broken config fails closed.
+ *
  * Bypass requires `--force-anyway` anywhere in the command. The bypass is
  * intentionally ugly so it shows up in transcripts and audits.
  *
@@ -46,6 +50,7 @@
  */
 
 const fs = require('fs');
+const { execFileSync } = require('child_process');
 
 // ── Constants ────────────────────────────────────────────────
 
@@ -58,6 +63,16 @@ const PROD_TRUNKS = new Set(['main', 'master']);
 const INTEGRATION_TRUNKS = new Set(['dev', 'develop']);
 
 const BYPASS_FLAG = '--force-anyway';
+
+// Per-project override: `.reconcile-gate.json` at the repo root, read ONLY
+// from the committed production-trunk ref (never the working tree) so that
+// widening the gate requires a human-reviewed merge to the production trunk.
+// Project rules take precedence over the global default (CLAUDE.md carve-out),
+// e.g. a repo whose own contract requires feature-branch → dev PRs.
+const PROJECT_CONFIG = '.reconcile-gate.json';
+// Remote-tracking refs only: local branches are agent-writable.
+const TRUNK_REFS = ['origin/main', 'origin/master'];
+const ANY = '*';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -121,19 +136,83 @@ function tokenize(cmd) {
 /**
  * Extract `--base` and `--head` from tokenized argv. Supports both
  * `--base main` (two tokens) and `--base=main` (one token) forms.
- * Returns { base, head, bypass } — any of which may be undefined / false.
+ * Returns { base, head, bypass, repo } — any of which may be undefined / false.
  */
 function parseArgs(tokens) {
-    let base, head, bypass = false;
+    let base, head, bypass = false, repo = false;
     for (let i = 0; i < tokens.length; i++) {
         const t = tokens[i];
         if (t === BYPASS_FLAG) bypass = true;
+        else if (t.startsWith('-R') || t === '--repo' || t.startsWith('--repo=')) repo = true;
         else if (t === '-B' || t === '--base') base = tokens[i + 1];
         else if (t === '-H' || t === '--head') head = tokens[i + 1];
+        else if (/^-B./.test(t)) base = t.slice(2);
+        else if (/^-H./.test(t)) head = t.slice(2);
         else if (t.startsWith('--base=')) base = t.slice('--base='.length);
         else if (t.startsWith('--head=')) head = t.slice('--head='.length);
     }
-    return { base, head, bypass };
+    return { base, head, bypass, repo };
+}
+
+// The host kills this hook at 5s; keep total git work well under that.
+const GIT_TIMEOUT_MS = 500;
+const LS_REMOTE_TIMEOUT_MS = 1200;
+
+function git(cwd, ...args) {
+    const last = args[args.length - 1];
+    const timeout = typeof last === 'number' ? args.pop() : GIT_TIMEOUT_MS;
+    return execFileSync('git', ['-C', cwd, ...args], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout,
+    });
+}
+
+/**
+ * The allowed (base, head) pairs. Defaults are production trunks × integration
+ * trunks. A project config (`allowed: [{base, head}]`, head "*" = any) ADDS
+ * pairs — it never widens bases and heads independently, so allowing
+ * feature → dev does not also allow feature → main.
+ *
+ * The config is trusted only when committed on the production trunk, found
+ * via the git toplevel of cwd, and the command does not target another repo
+ * (`--repo`). Fails closed: a config that exists but is unparsable or
+ * mistyped returns { error } rather than reverting to the defaults.
+ */
+function resolveRules(cwd, targetsOtherRepo) {
+    const pairs = [];
+    for (const b of PROD_TRUNKS) for (const h of INTEGRATION_TRUNKS) pairs.push({ base: b, head: h });
+    if (targetsOtherRepo || !cwd) return { pairs };
+
+    let root;
+    try { root = git(cwd, 'rev-parse', '--show-toplevel').trim(); } catch (e) { return { pairs }; }
+
+    // Per candidate trunk: resolve the fully-qualified tracking ref to a sha
+    // ONCE, confirm it equals what the real remote holds (refs/remotes/* is
+    // locally writable), then read the blob BY THAT SHA so nothing can change
+    // between check and read. Untrusted/unreachable candidates are skipped;
+    // with none trusted the stricter defaults apply.
+    let raw = null, ref = null;
+    for (const r of TRUNK_REFS) {
+        try {
+            const branch = r.slice('origin/'.length);
+            const sha = git(root, 'rev-parse', '--verify', '--quiet', `refs/remotes/${r}^{commit}`).trim();
+            const remote = git(root, 'ls-remote', '--exit-code', 'origin', `refs/heads/${branch}`, LS_REMOTE_TIMEOUT_MS)
+                .split(/\s/)[0];
+            if (!sha || sha !== remote) continue;
+            raw = git(root, 'show', `${sha}:${PROJECT_CONFIG}`);
+            ref = r;
+            break;
+        } catch (e) { /* no config / untrusted / offline: try next */ }
+    }
+    if (raw === null) return { pairs };
+
+    const where = `${PROJECT_CONFIG} @ ${ref}`;
+    let cfg;
+    try { cfg = JSON.parse(raw); } catch (e) { return { error: `${where} is not valid JSON (${e.message})` }; }
+    const ok = cfg && Array.isArray(cfg.allowed) && cfg.allowed.every(
+        (p) => p && typeof p.base === 'string' && p.base && typeof p.head === 'string' && p.head && p.base !== ANY);
+    if (!ok) return { error: `${where}: "allowed" must be an array of {base, head} non-empty strings (base may not be "*")` };
+    pairs.push(...cfg.allowed);
+    return { pairs };
 }
 
 // ── Main ─────────────────────────────────────────────────────
@@ -150,7 +229,7 @@ function main() {
     }
 
     const tokens = tokenize(cmd);
-    const { base, head, bypass } = parseArgs(tokens);
+    const { base, head, bypass, repo } = parseArgs(tokens);
 
     // Explicit bypass is allowed but loud — the flag appears in transcripts.
     if (bypass) {
@@ -170,26 +249,23 @@ function main() {
         );
     }
 
-    if (!PROD_TRUNKS.has(base)) {
+    const rules = resolveRules(input.cwd, repo);
+    if (rules.error) {
         return deny(
-            `reconcile-gate: PR --base "${base}" is not a production trunk. ` +
-            `Allowed bases: ${[...PROD_TRUNKS].join(', ')}. ` +
+            `reconcile-gate: invalid project override — ${rules.error}. ` +
+            'Fix the file on the production trunk or remove it; the gate fails closed on a broken config.'
+        );
+    }
+
+    const matches = (p) => p.base === base && (p.head === ANY || p.head === head);
+    if (!rules.pairs.some(matches)) {
+        const allowed = rules.pairs.map((p) => `${p.head}→${p.base}`).join(', ');
+        return deny(
+            `reconcile-gate: PR ${head}→${base} is not an allowed pair. Allowed: ${allowed}. ` +
             'The branching contract permits PRs only for integration-trunk → ' +
             'production-trunk. For routine agent work, use the reconciler ' +
             'specialist or /reconcile skill to land on the integration trunk ' +
             'without a PR. Override with --force-anyway if intentional.'
-        );
-    }
-
-    if (!INTEGRATION_TRUNKS.has(head)) {
-        return deny(
-            `reconcile-gate: PR --head "${head}" is not an integration trunk. ` +
-            `Allowed heads: ${[...INTEGRATION_TRUNKS].join(', ')}. ` +
-            'The branching contract permits PRs only for integration-trunk → ' +
-            'production-trunk (i.e. --head dev or --head develop). For routine ' +
-            'work, the reconciler lands changes on the integration trunk first; ' +
-            'a PR is only needed for the periodic integration → production batch. ' +
-            'Override with --force-anyway if intentional.'
         );
     }
 
