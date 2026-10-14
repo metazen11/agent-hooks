@@ -5,8 +5,8 @@
 ## 2026-10-14 - single-trunk default (#23)
 
 - Global default is now single-trunk: feature branch -> squash PR -> `main` (CI + independent review + auditor PASS). Two-trunk `dev -> main` is opt-in for repos that keep `dev`/`develop`. Human approval is opt-in via GitHub branch protection; agents never approve/merge in a human-gated repo.
-- `reconcile-gate`: no `origin/dev`/`origin/develop` => feature -> main allowed; git failure or `--repo` fails closed to two-trunk. `trunk-drift.yml` removed from this repo; `.reconcile-gate.json` added as bootstrap (only trusted once on `origin/main`).
-- **Open follow-ups:** `repo-contract/` still ships the two-trunk template (`githooks/pre-push`, `workflows/trunk-drift.yml`, `.githooks/pre-push` copy); `.github/workflows/test.yml` and `contract-integrity.yml` still list `dev` in triggers; delete remote `dev` branch once nothing depends on it (it makes this repo two-trunk to the gate).
+- `reconcile-gate`: single-trunk is a POSITIVE opt-in (`{"model":"single-trunk"}` in `.reconcile-gate.json` on SHA-verified origin/main), never inferred from a missing dev branch (fail-open on shallow/offline/forged refs); everything else keeps two-trunk. Always denies `gh pr merge --admin` and `git push` to main. MCP create_pr/git_push bypass the hook (residual risk). `trunk-drift.yml` removed from this repo; `.reconcile-gate.json` marker added (only trusted once on `origin/main`).
+- **Open follow-ups:** `repo-contract/` still ships the two-trunk template (`githooks/pre-push`, `workflows/trunk-drift.yml`, `.githooks/pre-push` copy); `.github/workflows/test.yml` and `contract-integrity.yml` still list `dev` in triggers;
 
 ## 2026-10-07 — reconcile-gate per-project override (landed via dev → main PR)
 

@@ -117,39 +117,67 @@ HOOK_CWD="$NOGIT" assert_decision "non-git dir w/ config: ignored" "deny" "Bash"
 unset HOOK_CWD
 
 echo
-echo "─── trunk detection (single-trunk default vs two-trunk opt-in) ─"
-# Single-trunk repo: origin has main only (no dev/develop).
-ST="$(mktemp -d)"; STO="$(mktemp -d)"
-trap 'rm -rf "$PROJ" "$NOGIT" "$ORIGIN" "$ST" "$STO"' EXIT
+echo "─── single-trunk is POSITIVE opt-in (marker on SHA-verified origin/main) ─"
+# Absence of dev/develop must NEVER imply single-trunk (offline, shallow clone,
+# forged refs all look like "no dev"). Only the committed marker opts in.
+ST="$(mktemp -d)"; STO="$(mktemp -d)"; SH="$(mktemp -d)"
+trap 'rm -rf "$PROJ" "$NOGIT" "$ORIGIN" "$ST" "$STO" "$SH"' EXIT
 git init -q --bare -b main "$STO"
 S="git -C $ST -c user.email=t@t -c user.name=t"
 $S init -q -b main && $S remote add origin "$STO" && echo x > "$ST/f" && $S add f && $S commit -qm init && $S push -q origin main && $S fetch -q origin
 export HOOK_CWD="$ST"
-assert_decision "single-trunk: feat→main allowed"          "allow" "Bash" "gh pr create --base main --head feat/x --title T"
-assert_decision "single-trunk: feat→master allowed"        "allow" "Bash" "gh pr create --base master --head work/y"
-assert_decision "single-trunk: feat→dev still denied"      "deny"  "Bash" "gh pr create --base dev --head feat/x"
-assert_decision "single-trunk: missing --head still denied" "deny" "Bash" "gh pr create --base main"
-# dev present => two-trunk rule (today's behaviour).
+FEAT="gh pr create --base main --head feat/x --title T"
+assert_decision "no marker, no dev: feat→main DENIED"        "deny"  "Bash" "$FEAT"
+echo '{"model":"single-trunk"}' > "$ST/.reconcile-gate.json"
+assert_decision "marker in working tree only: DENIED"        "deny"  "Bash" "$FEAT"
+$S checkout -q -b feat/x && $S add .reconcile-gate.json && $S commit -qm cfg && $S push -q origin feat/x
+assert_decision "marker on feature branch only: DENIED"      "deny"  "Bash" "$FEAT"
+$S checkout -q main && $S merge -q --ff-only feat/x && $S update-ref refs/remotes/origin/main main
+assert_decision "FORGED origin/main w/ marker (unpushed): DENIED" "deny" "Bash" "$FEAT"
+# shallow clone of a repo with NO marker: still two-trunk
+git clone -q --depth=1 "file://$STO" "$SH/nomarker" 2>/dev/null
+HOOK_CWD="$SH/nomarker" assert_decision "shallow clone, no marker: DENIED" "deny" "Bash" "$FEAT"
+# publish the marker on real main
+$S push -q origin main && $S fetch -q origin
+assert_decision "marker on verified origin/main: feat→main allowed"   "allow" "Bash" "$FEAT"
+assert_decision "marker: feat→master allowed too" "allow" "Bash" "gh pr create --base master --head feat/x"
+assert_decision "marker: feat→dev still denied"              "deny"  "Bash" "gh pr create --base dev --head feat/x"
+assert_decision "marker: missing --head still denied"        "deny"  "Bash" "gh pr create --base main"
+git clone -q --depth=1 "file://$STO" "$SH/marked" 2>/dev/null
+HOOK_CWD="$SH/marked" assert_decision "shallow clone WITH marker: allowed" "allow" "Bash" "$FEAT"
+# marker + integration trunk present: explicit opt-in still wins
 $S push -q origin main:dev && $S fetch -q origin
-assert_decision "dev present: feat→main denied"            "deny"  "Bash" "gh pr create --base main --head feat/x"
-assert_decision "dev present: dev→main allowed"            "allow" "Bash" "gh pr create --base main --head dev"
+assert_decision "marker + dev present: feat→main allowed"    "allow" "Bash" "$FEAT"
 $S push -q origin --delete dev && $S fetch -q --prune origin
-# develop (not dev) also counts as an integration trunk.
-$S push -q origin main:develop && $S fetch -q origin
-assert_decision "develop present: feat→main denied"        "deny"  "Bash" "gh pr create --base main --head feat/x"
-assert_decision "develop present: develop→main allowed"    "allow" "Bash" "gh pr create --base main --head develop"
-$S push -q origin --delete develop && $S fetch -q --prune origin
-assert_decision "develop removed: feat→main allowed again" "allow" "Bash" "gh pr create --base main --head feat/x"
-# Fail closed: git cannot answer (not a repo) => two-trunk rule.
-HOOK_CWD="$NOGIT" assert_decision "git fails: feat→main denied (fail closed)" "deny" "Bash" "gh pr create --base main --head feat/x"
-HOOK_CWD="$NOGIT" assert_decision "git fails: dev→main still allowed"         "allow" "Bash" "gh pr create --base main --head dev"
-# --repo targets another repo: local refs say nothing about it => fail closed.
-assert_decision "--repo other: feat→main denied (fail closed)" "deny" "Bash" "gh pr create --repo o/r --base main --head feat/x"
-# Bypass still works; config pairs still ADD in single-trunk mode.
-assert_decision "single-trunk: bypass flag still allowed"  "allow" "Bash" "gh pr create --base release --head x --force-anyway"
-echo '{"allowed":[{"base":"release","head":"*"}]}' > "$ST/.reconcile-gate.json"; $S add .reconcile-gate.json; $S commit -qm cfg; $S push -q origin main
-assert_decision "single-trunk + config: feat→release allowed" "allow" "Bash" "gh pr create --base release --head feat/x"
-assert_decision "single-trunk + config: feat→main still allowed" "allow" "Bash" "gh pr create --base main --head feat/x"
+# ls-remote failure => cannot verify => marker untrusted => two-trunk
+$S remote set-url origin "$SH/does-not-exist"
+assert_decision "ls-remote fails: marker untrusted, DENIED"  "deny"  "Bash" "$FEAT"
+$S remote set-url origin "$STO"
+# malformed / wrong-model config => fail closed
+echo '{"model":"banana"}' > "$ST/.reconcile-gate.json"; $S add .reconcile-gate.json; $S commit -qm bad; $S push -q origin main
+assert_decision "unknown model value: fail closed"           "deny"  "Bash" "$FEAT"
+echo '{not json' > "$ST/.reconcile-gate.json"; $S add .reconcile-gate.json; $S commit -qm bad2; $S push -q origin main
+assert_decision "malformed config: DENIED"                   "deny"  "Bash" "$FEAT"
+# legacy equivalent: allowed main/* is the same opt-in
+echo '{"allowed":[{"base":"main","head":"*"}]}' > "$ST/.reconcile-gate.json"; $S add .reconcile-gate.json; $S commit -qm legacy; $S push -q origin main
+assert_decision "legacy allowed main/*: feat→main allowed"   "allow" "Bash" "$FEAT"
+assert_decision "bypass flag still allowed"                  "allow" "Bash" "gh pr create --base release --head x --force-anyway"
+assert_decision "--repo other: marker not applied"           "deny"  "Bash" "gh pr create --repo o/r --base main --head feat/x"
+HOOK_CWD="$NOGIT" assert_decision "git fails: feat→main denied" "deny" "Bash" "$FEAT"
+
+echo
+echo "─── always-deny: gh pr merge --admin, direct push to trunk ─"
+assert_decision "gh pr merge 5 --squash: allowed"            "allow" "Bash" "gh pr merge 5 --squash"
+assert_decision "gh pr merge 5 --admin: DENIED"              "deny"  "Bash" "gh pr merge 5 --squash --admin"
+assert_decision "gh pr merge --admin + bypass: still DENIED" "deny"  "Bash" "gh pr merge 5 --admin --force-anyway"
+assert_decision "git push origin HEAD:main: DENIED"          "deny"  "Bash" "git push origin HEAD:main"
+assert_decision "git push origin main: DENIED"               "deny"  "Bash" "git push origin main"
+assert_decision "git push -u origin HEAD:refs/heads/main: DENIED" "deny" "Bash" "git push -u origin HEAD:refs/heads/main"
+assert_decision "git push origin +feat:master: DENIED"       "deny"  "Bash" "git push origin +feat:master"
+assert_decision "git push origin :refs/heads/main: DENIED"   "deny"  "Bash" "git push origin :refs/heads/main"
+assert_decision "git push origin feat/x: allowed"            "allow" "Bash" "git push origin feat/x"
+assert_decision "git push origin HEAD:feat/main-fix: allowed" "allow" "Bash" "git push origin HEAD:feat/main-fix"
+assert_decision "git push (no args): allowed"                "allow" "Bash" "git push"
 unset HOOK_CWD
 
 echo

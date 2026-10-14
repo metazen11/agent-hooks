@@ -198,7 +198,7 @@ Run `git-session/test-pre-edit-skips.sh` to verify these skip paths end-to-end.
 
 ### reconcile-gate
 
-Strict-block PreToolUse hook that enforces the global branching contract: `gh pr create` is refused unless `--base` is the production trunk (`main`/`master`) and, when the repo keeps a `dev`/`develop` branch (opt-in two-trunk), `--head` is that integration trunk; repos without one allow any feature head (default single-trunk). Bypass with `--force-anyway`.
+Strict-block PreToolUse hook that enforces the global branching contract: `gh pr create` is refused unless `--base` is the production trunk (`main`/`master`) and `--head` is the integration trunk (`dev`/`develop`), unless the repo opted into single-trunk with `{"model":"single-trunk"}` in `.reconcile-gate.json` on `origin/main`. Also denies `gh pr merge --admin` and direct `git push` to `main`. Bypass with `--force-anyway`.
 
 ```bash
 cd reconcile-gate

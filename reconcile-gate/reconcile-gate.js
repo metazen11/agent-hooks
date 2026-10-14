@@ -8,18 +8,22 @@
  * Process"):
  *
  *   - Production trunk = main (or master)
- *   - DEFAULT (single-trunk): feature branch → squash PR → main, gated by CI,
+ *   - Global default: feature branch → squash PR → main, gated by CI,
  *     independent code review and auditor PASS. A human approval gate is opt-in
  *     per repo via GitHub branch protection.
- *   - OPT-IN (two-trunk): a repo that keeps a `dev`/`develop` branch lands
- *     routine work there via `/reconcile` (no PR); PRs are ONLY for
+ *   - This hook enforces that only where a repo has opted in (marker on main);
+ *     otherwise it keeps the two-trunk rule: PRs ONLY for
  *     `integration-trunk → production-trunk`.
  *
  * A `gh pr create` invocation is refused unless:
  *
  *   1. --base is the production trunk (main or master), AND
- *   2. --head is ANY branch when the repo has no origin/dev or origin/develop
- *      (single-trunk), otherwise the integration trunk (dev or develop)
+ *   2. --head is the integration trunk (dev or develop), UNLESS the repo
+ *      opted into single-trunk with `{"model":"single-trunk"}` in
+ *      .reconcile-gate.json on the SHA-verified origin/main (any head allowed)
+ *
+ * Also always denied: `gh pr merge --admin` and `git push` to main/master.
+ * NOT covered: MCP tools (e.g. anvil create_pr / git_push) bypass this hook.
  *
  * A repo may add allowed (base, head) pairs via `.reconcile-gate.json`
  * committed on its production trunk (see README → Per-project override);
@@ -74,6 +78,9 @@ const PROJECT_CONFIG = '.reconcile-gate.json';
 // Remote-tracking refs only: local branches are agent-writable.
 const TRUNK_REFS = ['origin/main', 'origin/master'];
 const ANY = '*';
+const SINGLE_TRUNK = 'single-trunk';
+const GH_PR_MERGE_PATTERN = /^\s*gh\s+pr\s+merge\b/;
+const GIT_PUSH_PATTERN = /^\s*git\s+push\b/;
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -168,28 +175,12 @@ function git(cwd, ...args) {
 }
 
 /**
- * True ONLY when git positively reports that neither origin/dev nor
- * origin/develop exists (`show-ref --verify --quiet` exits 1 = absent). Any
- * other outcome (not a repo = 128, git missing, timeout) is "unknown" and
- * returns false, so the gate fails CLOSED to the two-trunk rule.
- * Remote-tracking refs can be stale until the next fetch; a repo that just
- * deleted/created its integration trunk should fetch --prune.
- */
-function hasNoIntegrationTrunk(cwd) {
-    for (const t of INTEGRATION_TRUNKS) {
-        try {
-            git(cwd, 'show-ref', '--verify', '--quiet', `refs/remotes/origin/${t}`);
-            return false; // exists => two-trunk mode
-        } catch (e) {
-            if (e.status !== 1) return false; // unknown => fail closed
-        }
-    }
-    return true;
-}
-
-/**
- * The allowed (base, head) pairs. Default is SINGLE-TRUNK (production trunk × any head) when the
- * repo has no integration trunk, else production trunks × integration trunks. A project config (`allowed: [{base, head}]`, head "*" = any) ADDS
+ * The allowed (base, head) pairs. The default is ALWAYS two-trunk (production
+ * trunks × integration trunks). Single-trunk is a POSITIVE opt-in: the
+ * project config declares `{"model":"single-trunk"}` (or the equivalent
+ * `allowed: [{base:"main", head:"*"}]`). Absence of a dev branch never implies
+ * it: offline, shallow clones and forged refs all look like "no dev".
+ * A project config (`allowed: [{base, head}]`, head "*" = any) ADDS
  * pairs — it never widens bases and heads independently, so allowing
  * feature → dev does not also allow feature → main.
  *
@@ -200,11 +191,8 @@ function hasNoIntegrationTrunk(cwd) {
  */
 function resolveRules(cwd, targetsOtherRepo) {
     const pairs = [];
-    const singleTrunk = !targetsOtherRepo && cwd && hasNoIntegrationTrunk(cwd);
-    for (const b of PROD_TRUNKS) {
-        if (singleTrunk) pairs.push({ base: b, head: ANY });
-        else for (const h of INTEGRATION_TRUNKS) pairs.push({ base: b, head: h });
-    }
+    let singleTrunk = false;
+    for (const b of PROD_TRUNKS) for (const h of INTEGRATION_TRUNKS) pairs.push({ base: b, head: h });
     if (targetsOtherRepo || !cwd) return { pairs, singleTrunk };
 
     let root;
@@ -233,11 +221,31 @@ function resolveRules(cwd, targetsOtherRepo) {
     const where = `${PROJECT_CONFIG} @ ${ref}`;
     let cfg;
     try { cfg = JSON.parse(raw); } catch (e) { return { error: `${where} is not valid JSON (${e.message})` }; }
-    const ok = cfg && Array.isArray(cfg.allowed) && cfg.allowed.every(
+    if (!cfg || typeof cfg !== 'object') return { error: `${where} must be a JSON object` };
+    const hasModel = cfg.model !== undefined;
+    if (hasModel && cfg.model !== SINGLE_TRUNK) {
+        return { error: `${where}: "model" must be "${SINGLE_TRUNK}" (got ${JSON.stringify(cfg.model)})` };
+    }
+    const allowed = cfg.allowed === undefined && hasModel ? [] : cfg.allowed;
+    const ok = Array.isArray(allowed) && allowed.every(
         (p) => p && typeof p.base === 'string' && p.base && typeof p.head === 'string' && p.head && p.base !== ANY);
     if (!ok) return { error: `${where}: "allowed" must be an array of {base, head} non-empty strings (base may not be "*")` };
-    pairs.push(...cfg.allowed);
+    if (hasModel) for (const b of PROD_TRUNKS) pairs.push({ base: b, head: ANY });
+    pairs.push(...allowed);
+    singleTrunk = hasModel || allowed.some((p) => PROD_TRUNKS.has(p.base) && p.head === ANY);
     return { pairs, singleTrunk };
+}
+
+// True when any refspec of a `git push` targets a production trunk, e.g.
+// `main`, `HEAD:main`, `+x:refs/heads/master`, `:refs/heads/main` (delete).
+// First positional is the remote; flags are skipped (a flag taking a value,
+// e.g. `-o x`, may shift this by one: that errs toward inspecting more).
+function pushesToProdTrunk(tokens) {
+    const pos = tokens.slice(2).filter((t) => !t.startsWith('-'));
+    return pos.slice(1).some((spec) => {
+        const dst = spec.replace(/^\+/, '').split(':').pop().replace(/^refs\/heads\//, '');
+        return PROD_TRUNKS.has(dst);
+    });
 }
 
 // ── Main ─────────────────────────────────────────────────────
@@ -247,6 +255,19 @@ function main() {
     const toolName = input.tool_name;
     const toolInput = input.tool_input || {};
     const cmd = toolInput.command || '';
+
+    if (toolName === 'Bash') {
+        // Always denied, even with --force-anyway: these bypass the review gate.
+        const t = tokenize(cmd);
+        if (GH_PR_MERGE_PATTERN.test(cmd) && t.includes('--admin')) {
+            return deny('reconcile-gate: gh pr merge --admin overrides branch protection and is never allowed. ' +
+                'Merge only after required checks and reviews pass, without --admin.');
+        }
+        if (GIT_PUSH_PATTERN.test(cmd) && pushesToProdTrunk(t)) {
+            return deny('reconcile-gate: direct git push to main/master is never allowed. ' +
+                'Push a feature branch and open a PR (gh pr create --base main --head <branch>).');
+        }
+    }
 
     // Pass through everything that is not a `gh pr create` Bash call.
     if (toolName !== 'Bash' || !GH_PR_CREATE_PATTERN.test(cmd)) {
@@ -287,11 +308,11 @@ function main() {
         return deny(
             `reconcile-gate: PR ${head}→${base} is not an allowed pair. Allowed: ${allowed}. ` +
             (rules.singleTrunk
-                ? 'This repo has no dev/develop branch (single-trunk mode): open the PR from your ' +
-                  'feature branch to main/master. '
-                : 'This repo has an integration trunk (origin/dev or origin/develop), or git could ' +
-                  'not be queried (fail closed): PRs are allowed only integration-trunk → ' +
-                  'production-trunk; land routine work via the reconciler specialist or /reconcile. ') +
+                ? 'This repo is single-trunk: PR from your feature branch to main/master, or an allowed pair. '
+                : 'Two-trunk rule applies (no single-trunk marker verified on origin/main; offline, ' +
+                  'shallow or unverifiable git also lands here, fail closed): PRs are allowed only ' +
+                  'integration-trunk → production-trunk. To opt in to single-trunk, merge ' +
+                  '{"model":"single-trunk"} as .reconcile-gate.json to main. ') +
             'Override with --force-anyway if intentional.'
         );
     }
