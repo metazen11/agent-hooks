@@ -311,7 +311,7 @@ Other agents (Codex, Anvil, future Claude sessions) read code cold. They lack th
 ### Obligations
 - When the orchestrator delegates work to a subagent that will **write** files (Write, Edit, NotebookEdit) or run mutating commands, the subagent **MUST** operate in an isolated git worktree, container, or ephemeral copy of the repo — not the orchestrator's live working directory.
 - Read-only subagents (Explore, code-reviewer in read-only mode, security-auditor) **MAY** operate in the orchestrator's working directory since they cannot mutate state.
-- The orchestrator **MUST** reconcile each subagent's worktree into the *current working branch* — the branch the orchestrator was on when the delegation started (a session branch, a feature branch, or `dev` — but never directly into `main`/`master`/`prod`) — as a discrete commit or merge, so contributions are:
+- The orchestrator **MUST** reconcile each subagent's worktree into the *current working branch* — the branch the orchestrator was on when the delegation started (a session branch, a feature branch, or an integration branch — but never directly into `main`/`master`/`prod`) — as a discrete commit or merge, so contributions are:
   1. **Reviewable independently** — one subagent's work can be reverted without touching another's
   2. **Auditable** — the merge history shows which subagent produced which change
   3. **Race-free** — parallel subagent writes cannot corrupt shared files
@@ -334,9 +334,9 @@ Other agents (Codex, Anvil, future Claude sessions) read code cold. They lack th
 
 ### Corollary — Branch Discipline
 - All new work lands on the current working branch (session or feature branch) first.
-- The working branch is reconciled into `dev` (or the operator's designated integration branch) via a reviewed merge.
-- `dev` → `main`/`prod` is a reviewed, gated promotion (PR + tests + optional operator approval).
-- The orchestrator **MUST NOT** short-circuit this chain by pushing directly to `main` or by merging to `dev` without at least self-review (running the code-reviewer specialist per §10).
+- Default (single-trunk): the working branch reaches `main` through a squash PR gated by CI, independent code review and auditor PASS; human approval is opt-in per repo via branch protection.
+- Opt-in (two-trunk, repos that keep `dev`/`develop`): the working branch is reconciled into the integration branch via a reviewed merge, and integration → `main`/`prod` is a reviewed, gated promotion.
+- The orchestrator **MUST NOT** short-circuit this chain by pushing directly to `main` or by merging to an integration branch without at least self-review (running the code-reviewer specialist per §10).
 - The reconciliation target is always the *current working branch* — inferred from `git branch --show-current` — not a hardcoded branch name. Repos vary; the branch on disk is the source of truth.
 
 ---

@@ -1,6 +1,12 @@
 # Session Handoff
 
-**Last updated:** 2026-10-07
+**Last updated:** 2026-10-14
+
+## 2026-10-14 - single-trunk default (#23)
+
+- Global default is now single-trunk: feature branch -> squash PR -> `main` (CI + independent review + auditor PASS). Two-trunk `dev -> main` is opt-in for repos that keep `dev`/`develop`. Human approval is opt-in via GitHub branch protection; agents never approve/merge in a human-gated repo.
+- `reconcile-gate`: no `origin/dev`/`origin/develop` => feature -> main allowed; git failure or `--repo` fails closed to two-trunk. `trunk-drift.yml` removed from this repo; `.reconcile-gate.json` added as bootstrap (only trusted once on `origin/main`).
+- **Open follow-ups:** `repo-contract/` still ships the two-trunk template (`githooks/pre-push`, `workflows/trunk-drift.yml`, `.githooks/pre-push` copy); `.github/workflows/test.yml` and `contract-integrity.yml` still list `dev` in triggers; delete remote `dev` branch once nothing depends on it (it makes this repo two-trunk to the gate).
 
 ## 2026-10-07 — reconcile-gate per-project override (landed via dev → main PR)
 
@@ -110,11 +116,9 @@ Detects and wires up whichever of Claude Code / Codex / Gemini / Anvil are prese
 ~/_CODING/hooks/contracts/pull-and-update.sh
 ```
 
-Or manually: `cd ~/_CODING/hooks && git pull --ff-only origin dev && cd contracts && node install.js --all`
+Or manually: `cd ~/_CODING/hooks && git pull --ff-only origin main && cd contracts && node install.js --all`
 
-> **Trunk note (2026-09-20):** install from `dev`, not `main`. `dev` is the integration
-> trunk and is the only branch that holds every hook package; `main` lacks iron-rules,
-> self-update, self-improve and hf-launch-gate until the next dev -> main PR.
+> **Trunk note (2026-10-14):** this repo is now single-trunk; install from `main`.
 
 **Automatic reminder** — once installed, Claude Code sessions on that machine print an update banner at SessionStart if remote has advanced. Rate-limited to once every 4 hours.
 

@@ -8,17 +8,18 @@
  * Process"):
  *
  *   - Production trunk = main (or master)
- *   - Integration trunk = dev (or develop)
- *   - Routine agent work lands on the integration trunk via the `reconciler`
- *     specialist / `/reconcile` skill — no GitHub PR.
- *   - PRs are ONLY for `integration-trunk → production-trunk`. That is the
- *     single human-review gate.
+ *   - DEFAULT (single-trunk): feature branch → squash PR → main, gated by CI,
+ *     independent code review and auditor PASS. A human approval gate is opt-in
+ *     per repo via GitHub branch protection.
+ *   - OPT-IN (two-trunk): a repo that keeps a `dev`/`develop` branch lands
+ *     routine work there via `/reconcile` (no PR); PRs are ONLY for
+ *     `integration-trunk → production-trunk`.
  *
- * This hook enforces rule #3 at tool-call time. A `gh pr create` invocation
- * is refused unless:
+ * A `gh pr create` invocation is refused unless:
  *
  *   1. --base is the production trunk (main or master), AND
- *   2. --head is the integration trunk (dev or develop)
+ *   2. --head is ANY branch when the repo has no origin/dev or origin/develop
+ *      (single-trunk), otherwise the integration trunk (dev or develop)
  *
  * A repo may add allowed (base, head) pairs via `.reconcile-gate.json`
  * committed on its production trunk (see README → Per-project override);
@@ -167,8 +168,28 @@ function git(cwd, ...args) {
 }
 
 /**
- * The allowed (base, head) pairs. Defaults are production trunks × integration
- * trunks. A project config (`allowed: [{base, head}]`, head "*" = any) ADDS
+ * True ONLY when git positively reports that neither origin/dev nor
+ * origin/develop exists (`show-ref --verify --quiet` exits 1 = absent). Any
+ * other outcome (not a repo = 128, git missing, timeout) is "unknown" and
+ * returns false, so the gate fails CLOSED to the two-trunk rule.
+ * Remote-tracking refs can be stale until the next fetch; a repo that just
+ * deleted/created its integration trunk should fetch --prune.
+ */
+function hasNoIntegrationTrunk(cwd) {
+    for (const t of INTEGRATION_TRUNKS) {
+        try {
+            git(cwd, 'show-ref', '--verify', '--quiet', `refs/remotes/origin/${t}`);
+            return false; // exists => two-trunk mode
+        } catch (e) {
+            if (e.status !== 1) return false; // unknown => fail closed
+        }
+    }
+    return true;
+}
+
+/**
+ * The allowed (base, head) pairs. Default is SINGLE-TRUNK (production trunk × any head) when the
+ * repo has no integration trunk, else production trunks × integration trunks. A project config (`allowed: [{base, head}]`, head "*" = any) ADDS
  * pairs — it never widens bases and heads independently, so allowing
  * feature → dev does not also allow feature → main.
  *
@@ -179,11 +200,15 @@ function git(cwd, ...args) {
  */
 function resolveRules(cwd, targetsOtherRepo) {
     const pairs = [];
-    for (const b of PROD_TRUNKS) for (const h of INTEGRATION_TRUNKS) pairs.push({ base: b, head: h });
-    if (targetsOtherRepo || !cwd) return { pairs };
+    const singleTrunk = !targetsOtherRepo && cwd && hasNoIntegrationTrunk(cwd);
+    for (const b of PROD_TRUNKS) {
+        if (singleTrunk) pairs.push({ base: b, head: ANY });
+        else for (const h of INTEGRATION_TRUNKS) pairs.push({ base: b, head: h });
+    }
+    if (targetsOtherRepo || !cwd) return { pairs, singleTrunk };
 
     let root;
-    try { root = git(cwd, 'rev-parse', '--show-toplevel').trim(); } catch (e) { return { pairs }; }
+    try { root = git(cwd, 'rev-parse', '--show-toplevel').trim(); } catch (e) { return { pairs, singleTrunk }; }
 
     // Per candidate trunk: resolve the fully-qualified tracking ref to a sha
     // ONCE, confirm it equals what the real remote holds (refs/remotes/* is
@@ -203,7 +228,7 @@ function resolveRules(cwd, targetsOtherRepo) {
             break;
         } catch (e) { /* no config / untrusted / offline: try next */ }
     }
-    if (raw === null) return { pairs };
+    if (raw === null) return { pairs, singleTrunk };
 
     const where = `${PROJECT_CONFIG} @ ${ref}`;
     let cfg;
@@ -212,7 +237,7 @@ function resolveRules(cwd, targetsOtherRepo) {
         (p) => p && typeof p.base === 'string' && p.base && typeof p.head === 'string' && p.head && p.base !== ANY);
     if (!ok) return { error: `${where}: "allowed" must be an array of {base, head} non-empty strings (base may not be "*")` };
     pairs.push(...cfg.allowed);
-    return { pairs };
+    return { pairs, singleTrunk };
 }
 
 // ── Main ─────────────────────────────────────────────────────
@@ -242,9 +267,8 @@ function main() {
     // with a clear message.
     if (!base || !head) {
         return deny(
-            'reconcile-gate: gh pr create requires --base and --head explicitly. ' +
-            'The branching contract permits PRs only for integration-trunk → ' +
-            'production-trunk (e.g. --base main --head dev). See global ' +
+            'reconcile-gate: gh pr create requires --base and --head explicitly ' +
+            '(e.g. --base main --head <your-branch>). See global ' +
             'CLAUDE.md → "Branching & Integration Process".'
         );
     }
@@ -262,10 +286,13 @@ function main() {
         const allowed = rules.pairs.map((p) => `${p.head}→${p.base}`).join(', ');
         return deny(
             `reconcile-gate: PR ${head}→${base} is not an allowed pair. Allowed: ${allowed}. ` +
-            'The branching contract permits PRs only for integration-trunk → ' +
-            'production-trunk. For routine agent work, use the reconciler ' +
-            'specialist or /reconcile skill to land on the integration trunk ' +
-            'without a PR. Override with --force-anyway if intentional.'
+            (rules.singleTrunk
+                ? 'This repo has no dev/develop branch (single-trunk mode): open the PR from your ' +
+                  'feature branch to main/master. '
+                : 'This repo has an integration trunk (origin/dev or origin/develop), or git could ' +
+                  'not be queried (fail closed): PRs are allowed only integration-trunk → ' +
+                  'production-trunk; land routine work via the reconciler specialist or /reconcile. ') +
+            'Override with --force-anyway if intentional.'
         );
     }
 

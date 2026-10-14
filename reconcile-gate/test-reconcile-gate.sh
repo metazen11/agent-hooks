@@ -80,6 +80,8 @@ PROJ="$(mktemp -d)"; NOGIT="$(mktemp -d)"; ORIGIN="$(mktemp -d)"; trap 'rm -rf "
 git init -q --bare -b main "$ORIGIN"
 G="git -C $PROJ -c user.email=t@t -c user.name=t"
 $G init -q -b main && $G remote add origin "$ORIGIN" && mkdir -p "$PROJ/sub/dir" && echo x > "$PROJ/f" && $G add f && $G commit -qm init && $G push -q origin main
+# two-trunk mode: the repo keeps an integration trunk, so origin/dev exists
+$G push -q origin main:dev && $G fetch -q origin
 export HOOK_CWD="$PROJ/sub/dir"
 # commit_cfg <json>: commit the config on main (the only trusted location)
 commit_cfg() { echo "$1" > "$PROJ/.reconcile-gate.json"; $G add .reconcile-gate.json; $G commit -qm cfg; $G push -q origin main; }
@@ -112,6 +114,42 @@ commit_cfg '{"allowedBases":["dev"]}'
 assert_decision "old/wrong schema: fail closed"            "deny"  "Bash" "gh pr create --base dev --head feat/x"
 echo '{"allowed":[{"base":"dev","head":"*"}]}' > "$NOGIT/.reconcile-gate.json"
 HOOK_CWD="$NOGIT" assert_decision "non-git dir w/ config: ignored" "deny" "Bash" "gh pr create --base dev --head feat/x"
+unset HOOK_CWD
+
+echo
+echo "─── trunk detection (single-trunk default vs two-trunk opt-in) ─"
+# Single-trunk repo: origin has main only (no dev/develop).
+ST="$(mktemp -d)"; STO="$(mktemp -d)"
+trap 'rm -rf "$PROJ" "$NOGIT" "$ORIGIN" "$ST" "$STO"' EXIT
+git init -q --bare -b main "$STO"
+S="git -C $ST -c user.email=t@t -c user.name=t"
+$S init -q -b main && $S remote add origin "$STO" && echo x > "$ST/f" && $S add f && $S commit -qm init && $S push -q origin main && $S fetch -q origin
+export HOOK_CWD="$ST"
+assert_decision "single-trunk: feat→main allowed"          "allow" "Bash" "gh pr create --base main --head feat/x --title T"
+assert_decision "single-trunk: feat→master allowed"        "allow" "Bash" "gh pr create --base master --head work/y"
+assert_decision "single-trunk: feat→dev still denied"      "deny"  "Bash" "gh pr create --base dev --head feat/x"
+assert_decision "single-trunk: missing --head still denied" "deny" "Bash" "gh pr create --base main"
+# dev present => two-trunk rule (today's behaviour).
+$S push -q origin main:dev && $S fetch -q origin
+assert_decision "dev present: feat→main denied"            "deny"  "Bash" "gh pr create --base main --head feat/x"
+assert_decision "dev present: dev→main allowed"            "allow" "Bash" "gh pr create --base main --head dev"
+$S push -q origin --delete dev && $S fetch -q --prune origin
+# develop (not dev) also counts as an integration trunk.
+$S push -q origin main:develop && $S fetch -q origin
+assert_decision "develop present: feat→main denied"        "deny"  "Bash" "gh pr create --base main --head feat/x"
+assert_decision "develop present: develop→main allowed"    "allow" "Bash" "gh pr create --base main --head develop"
+$S push -q origin --delete develop && $S fetch -q --prune origin
+assert_decision "develop removed: feat→main allowed again" "allow" "Bash" "gh pr create --base main --head feat/x"
+# Fail closed: git cannot answer (not a repo) => two-trunk rule.
+HOOK_CWD="$NOGIT" assert_decision "git fails: feat→main denied (fail closed)" "deny" "Bash" "gh pr create --base main --head feat/x"
+HOOK_CWD="$NOGIT" assert_decision "git fails: dev→main still allowed"         "allow" "Bash" "gh pr create --base main --head dev"
+# --repo targets another repo: local refs say nothing about it => fail closed.
+assert_decision "--repo other: feat→main denied (fail closed)" "deny" "Bash" "gh pr create --repo o/r --base main --head feat/x"
+# Bypass still works; config pairs still ADD in single-trunk mode.
+assert_decision "single-trunk: bypass flag still allowed"  "allow" "Bash" "gh pr create --base release --head x --force-anyway"
+echo '{"allowed":[{"base":"release","head":"*"}]}' > "$ST/.reconcile-gate.json"; $S add .reconcile-gate.json; $S commit -qm cfg; $S push -q origin main
+assert_decision "single-trunk + config: feat→release allowed" "allow" "Bash" "gh pr create --base release --head feat/x"
+assert_decision "single-trunk + config: feat→main still allowed" "allow" "Bash" "gh pr create --base main --head feat/x"
 unset HOOK_CWD
 
 echo
