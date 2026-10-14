@@ -51,20 +51,21 @@
  *      "permissionDecision":"deny",
  *      "permissionDecisionReason":"<explanation>"}}
  *
- * The hook intentionally only inspects `gh pr create` invocations. Other
- * `gh` commands and other Bash calls pass through unchanged. Pattern is
- * anchored at the start of the command so `mygh pr create ...` or comments
- * mentioning the string are not blocked.
+ * The hook inspects only `gh pr create`, `gh pr merge --admin` and `git push`
+ * segments (programs must be exactly `gh`/`git`, so `mygh pr create` or text
+ * in comments/quotes is not matched). Everything else passes through.
+ *
+ * Known limits (accidental-misuse threat model): not a shell parser. Not
+ * understood: `bash -c "..."`, `$(...)`, backticks, wrappers (`env`, `sudo`),
+ * aliases. `cd` targets and relative `-C` paths are NOT followed for repo
+ * state: branch/upstream/origin checks use the hook's cwd (or an absolute
+ * `-C`), not the directory the chained command moves to.
  */
 
 const fs = require('fs');
 const { execFileSync } = require('child_process');
 
 // ── Constants ────────────────────────────────────────────────
-
-// Anchored start-of-command match for `gh pr create`. Tolerates leading
-// whitespace, env-var prefixes are deliberately ignored (rare and easy to
-// catch by reading the deny reason).
 
 const PROD_TRUNKS = new Set(['main', 'master']);
 const INTEGRATION_TRUNKS = new Set(['dev', 'develop']);
@@ -226,7 +227,7 @@ function ownerRepo(str) {
 function originIsGhTarget(root, repoFlag) {
     try {
         const url = git(root, 'config', '--get', 'remote.origin.url').trim();
-        if (!/github\.com/i.test(url)) return false;
+        if (!/^(?:https?:\/\/(?:[^@/]+@)?|ssh:\/\/git@|git@)github\.com[/:]/i.test(url)) return false;
         let target = repoFlag;
         if (!target) {
             target = execFileSync('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'],
@@ -333,11 +334,15 @@ function pushDenyReason(rest, cwd) {
     try { branch = git(cwd, 'symbolic-ref', '--short', 'HEAD').trim(); }
     catch (e) { return 'cannot resolve the current branch (detached HEAD or not a repo), failing closed.' + fix; }
     if (PROD_TRUNKS.has(branch)) return `the current branch is ${branch}; pushing it is never allowed.` + fix;
-    if (specs.length === 0 && !remote) {
-        let up;
+    if (specs.length === 0) {
+        // No refspec: the push target comes from config (push.default=upstream
+        // sends `git push origin` to the upstream branch). With no explicit
+        // remote an unresolvable target fails closed; with one, only a
+        // resolved main/master target denies.
+        let up = null;
         try { up = git(cwd, 'rev-parse', '--abbrev-ref', '@{push}').trim(); }
-        catch (e) { return 'cannot resolve the push target of a bare git push, failing closed.' + fix; }
-        if (PROD_TRUNKS.has(up.slice(up.indexOf('/') + 1))) return `the push target is ${up}; never allowed.` + fix;
+        catch (e) { if (!remote) return 'cannot resolve the push target of a bare git push, failing closed.' + fix; }
+        if (up && PROD_TRUNKS.has(up.slice(up.indexOf('/') + 1))) return `the push target is ${up}; never allowed.` + fix;
     }
     return null;
 }

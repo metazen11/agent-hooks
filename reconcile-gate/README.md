@@ -21,7 +21,7 @@ Always denied (even with `--force-anyway`):
 - `git push --all` / `--mirror`;
 - a push that lands on the current branch (bare `git push`, `git push origin`, `... HEAD`, `--tags`) when that branch, or the bare push's `@{push}` target, is `main`/`master`. Detached HEAD or an unresolvable branch/upstream fails closed (use `git push -u origin HEAD:<branch>`).
 
-**Residual risks:** the threat model is accidental misuse, not an adversary: an adversarial agent can still use `--force-anyway` or evade the splitter (`bash -c "..."`, `$(...)`, wrappers like `env`/`sudo`, aliases; the `cd` of a chained command is not followed for cwd). Flags that take a value (`git push -o x`) can shift positional parsing. Non-JSON stdin falls through to the host default (pre-existing). MCP tools (e.g. anvil `create_pr` / `git_push`) are not Bash calls and bypass this hook entirely. Close that with GitHub branch protection (required reviews and checks, `enforce_admins`), which is server-side.
+**Residual risks:** the threat model is accidental misuse, not an adversary: an adversarial agent can still use `--force-anyway` or evade the splitter (`bash -c "..."`, `$(...)`, wrappers like `env`/`sudo`, aliases; `cd` targets and relative `-C` paths are not followed, so branch/upstream/origin checks use the hook's cwd (or an absolute `-C`)). Flags that take a value (`git push -o x`) can shift positional parsing. Non-JSON stdin falls through to the host default (pre-existing). MCP tools (e.g. anvil `create_pr` / `git_push`) are not Bash calls and bypass this hook entirely. Close that with GitHub branch protection (required reviews and checks, `enforce_admins`), which is server-side.
 
 Human approval is opt-in per repo through GitHub branch protection (required approving reviews on `main`, optionally CODEOWNERS), not through this hook. Agents never approve or merge in a human-gated repo.
 
@@ -67,7 +67,7 @@ After install, restart Claude Code to activate.
 ./reconcile-gate/test-reconcile-gate.sh
 ```
 
-Runs 104 cases covering allow/deny paths, the per-project override, the single-trunk opt-in (shallow clone, ls-remote failure, forged ref, repointed origin, gh failure, stale master marker, working-tree/feature-branch-only and malformed config all deny), command prefixes/chains, and the always-deny rules. The suite stubs `gh` on PATH and gives fixture repos a GitHub-style origin URL routed by `url.<bare>.insteadOf`.
+Runs 110 cases covering allow/deny paths, the per-project override, the single-trunk opt-in (shallow clone, ls-remote failure, forged ref, repointed origin, gh failure, stale master marker, working-tree/feature-branch-only and malformed config all deny), command prefixes/chains, and the always-deny rules. The suite stubs `gh` on PATH and gives fixture repos a GitHub-style origin URL routed by `url.<bare>.insteadOf`.
 
 ## Decision matrix
 

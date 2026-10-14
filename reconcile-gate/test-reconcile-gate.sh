@@ -208,6 +208,14 @@ $S remote set-url origin "https://github.com/evil/x.git"
 $S config url."$STO".insteadOf "https://github.com/evil/x.git"
 GH_FAKE_REPO=o/r assert_decision "origin repointed to evil/x: DENIED" "deny" "Bash" "$FEAT"
 $S remote set-url origin "$ORIGURL"
+# lookalike hosts must not count as GitHub
+for U in "https://github.com.evil.com/o/r.git" "https://evil.com/github.com/o/r.git"; do
+    $S remote set-url origin "$U"; $S config url."$STO".insteadOf "$U"
+    assert_decision "lookalike origin host $U: DENIED" "deny" "Bash" "$FEAT"
+done
+$S remote set-url origin "$ORIGURL"
+$S config url."$STO".insteadOf "$ORIGURL"
+assert_decision "restored origin: allowed again"  "allow" "Bash" "$FEAT"
 
 echo
 echo "─── round 2: stale master marker must not be consulted when origin/main exists ─"
@@ -238,6 +246,8 @@ assert_decision "merge --admin after || "          "deny"  "Bash" "false || gh p
 assert_decision "merge --admin on 2nd line"        "deny"  "Bash" $'echo a\ngh pr merge 5 --admin'
 assert_decision "--admin=true"                     "deny"  "Bash" "gh pr merge 5 --admin=true"
 assert_decision "quoted ; is not a separator"      "allow" "Bash" "echo \"a; gh pr merge 5 --admin\""
+assert_decision "quoted && in git commit -m"       "allow" "Bash" "git commit -m \"a && b; c\""
+assert_decision "git push origin feat 2>&1"        "allow" "Bash" "git push origin feat 2>&1"
 assert_decision "chained plain merge allowed"      "allow" "Bash" "cd /tmp && gh pr merge 5 --squash"
 # the PR gate applies to every segment too (no marker => two-trunk)
 HOOK_CWD="$NOGIT" assert_decision "cd x && gh pr create feat→main: DENIED" "deny" "Bash" "cd x && gh pr create --base main --head feat/x"
@@ -268,6 +278,8 @@ $B push -q origin feat/y && $B branch -q --set-upstream-to=origin/feat/y
 assert_decision "on feature w/ upstream: bare push allowed" "allow" "Bash" "git push"
 $B branch -q --set-upstream-to=origin/main
 assert_decision "feature tracking origin/main: bare push DENIED" "deny" "Bash" "git push"
+$B config push.default upstream
+assert_decision "feature tracking origin/main: git push origin DENIED" "deny" "Bash" "git push origin"
 $B checkout -q --detach
 assert_decision "detached HEAD: git push origin HEAD fails closed" "deny" "Bash" "git push origin HEAD"
 rm -rf "$PB" "$PBO"
