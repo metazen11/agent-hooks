@@ -4,39 +4,37 @@ The branching contract for this repo. It lives here — versioned, in the
 repo — so it reaches every machine and every agent that clones it, rather
 than living in one developer's `~/.claude/`.
 
-## Trunks
+## Trunk
+
+This repo is **single-trunk** (the global default). A repo that keeps a
+`dev`/`develop` branch opts into two-trunk (`dev -> main` PRs only).
 
 | Branch | Role | How it receives commits |
 |---|---|---|
-| `main` | production | **only** a reviewed PR from `dev` |
-| `dev` | integration | direct pushes, after a green local gate |
+| `main` | production | **only** a squash-merged PR from a feature branch |
 
 ## Rules
 
-1. **Never push directly to `main`.** Work lands on `dev`, and `dev` reaches
-   `main` through a pull request. That PR is the single human review gate.
-2. **Never let `dev` fall behind `main`.** If something reaches production
-   without passing through `dev`, the next `dev -> main` PR renders those
-   commits as **deletions** and silently reverts shipped work. Fix it the
-   moment you notice:
-   ```
-   git checkout dev && git fetch origin && git merge origin/main && git push origin dev
-   ```
-3. **Don't promote red work.** A `dev -> main` PR merges only with CI green.
+1. **Never push directly to `main`.** Work happens on a feature branch
+   (`work/issue-<n>-<slug>`) and reaches `main` through a squash PR.
+2. **A PR merges only when** CI is green, an independent code review has run,
+   and an auditor has returned PASS against the originating issue.
+3. **Human approval is opt-in** via GitHub branch protection (required
+   approving reviews on `main`, optionally CODEOWNERS). Agents never approve
+   or merge in a human-gated repo.
 4. **Verify the end state, not the action.** "I pushed it" is not "it landed".
    Check the branch, the PR, the check.
 
-## Enforcement — four layers, by strength
+## Enforcement: layers, by strength
 
 | Layer | Where it runs | Bypassable? |
 |---|---|---|
-| **Branch protection** on `main` | GitHub (server) | No — `enforce_admins` is on |
-| **`trunk-drift` workflow** | GitHub Actions | No — fails the check |
+| **Branch protection** on `main` | GitHub (server) | No, `enforce_admins` is on |
 | **`.githooks/pre-push`** | your machine | Yes: `ALLOW_PROTECTED_PUSH=1` (audited) |
 | **This document** | your eyes | Entirely |
 
-Only the top two travel automatically. The hook needs one command per clone
-(below); this file needs someone to read it.
+Only branch protection travels automatically. The hook needs one command per
+clone (below); this file needs someone to read it.
 
 ## Setup — once per MACHINE
 

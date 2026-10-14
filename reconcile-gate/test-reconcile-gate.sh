@@ -19,6 +19,20 @@ HOOK="$(cd "$(dirname "$0")" && pwd)/reconcile-gate.js"
 PASS=0
 FAIL=0
 
+# The hook asks `gh repo view` which repo gh will target and requires origin's
+# URL to name the same owner/repo. Stub gh: GH_FAKE=fail => exit 1;
+# GH_FAKE_REPO overrides the answer (default o/r).
+STUB="$(mktemp -d)"
+printf '#!/bin/sh\n[ "$GH_FAKE" = fail ] && exit 1\necho "${GH_FAKE_REPO:-o/r}"\n' > "$STUB/gh"
+chmod +x "$STUB/gh"
+export PATH="$STUB:$PATH"
+ORIGURL="https://github.com/o/r.git"
+# link_origin <repo> <bare>: origin URL names o/r; insteadOf routes it to <bare>.
+link_origin() {
+    git -C "$1" remote add origin "$ORIGURL" 2>/dev/null || git -C "$1" remote set-url origin "$ORIGURL"
+    git -C "$1" config url."$2".insteadOf "$ORIGURL"
+}
+
 # ── helpers ──────────────────────────────────────────────────
 
 # Run the hook with a synthetic stdin payload; return permission decision.
@@ -28,6 +42,7 @@ decision() {
     local payload
     # Escape double quotes for JSON embedding.
     cmd="${cmd//\"/\\\"}"
+    cmd="${cmd//$'\n'/\\n}"
     payload="{\"tool_name\":\"$tool_name\",\"cwd\":\"${HOOK_CWD:-/}\",\"tool_input\":{\"command\":\"$cmd\"}}"
     echo "$payload" \
         | node "$HOOK" \
@@ -79,7 +94,9 @@ echo "─── per-project override (.reconcile-gate.json on trunk) ─"
 PROJ="$(mktemp -d)"; NOGIT="$(mktemp -d)"; ORIGIN="$(mktemp -d)"; trap 'rm -rf "$PROJ" "$NOGIT" "$ORIGIN"' EXIT
 git init -q --bare -b main "$ORIGIN"
 G="git -C $PROJ -c user.email=t@t -c user.name=t"
-$G init -q -b main && $G remote add origin "$ORIGIN" && mkdir -p "$PROJ/sub/dir" && echo x > "$PROJ/f" && $G add f && $G commit -qm init && $G push -q origin main
+$G init -q -b main && link_origin "$PROJ" "$ORIGIN" && mkdir -p "$PROJ/sub/dir" && echo x > "$PROJ/f" && $G add f && $G commit -qm init && $G push -q origin main
+# two-trunk mode: the repo keeps an integration trunk, so origin/dev exists
+$G push -q origin main:dev && $G fetch -q origin
 export HOOK_CWD="$PROJ/sub/dir"
 # commit_cfg <json>: commit the config on main (the only trusted location)
 commit_cfg() { echo "$1" > "$PROJ/.reconcile-gate.json"; $G add .reconcile-gate.json; $G commit -qm cfg; $G push -q origin main; }
@@ -94,12 +111,12 @@ assert_decision "FORGED origin/main (update-ref, unpushed): ignored" "deny" "Bas
 $G push -q origin main
 assert_decision "committed+pushed: feat→dev allowed (subdir)" "allow" "Bash" "gh pr create --base dev --head feat/x"
 assert_decision "concatenated -Bdev -Hfeat/x allowed"      "allow" "Bash" "gh pr create -Bdev -Hfeat/x"
-assert_decision "concatenated -Ro/r: override not applied" "deny"  "Bash" "gh pr create -Ro/r --base dev --head feat/x"
+assert_decision "concatenated -Ro/r: override not applied" "deny"  "Bash" "gh pr create -Rz/z --base dev --head feat/x"
 assert_decision "committed: canonical main←dev still ok"   "allow" "Bash" "gh pr create --base main --head dev"
 assert_decision "NO cross-product: feat→main still denied" "deny"  "Bash" "gh pr create --base main --head feat/x"
 assert_decision "unlisted base still denied"               "deny"  "Bash" "gh pr create --base release --head feat/x"
-assert_decision "--repo other: override not applied"       "deny"  "Bash" "gh pr create --repo o/r --base dev --head feat/x"
-assert_decision "-R other: override not applied"           "deny"  "Bash" "gh pr create -R o/r --base dev --head feat/x"
+assert_decision "--repo other: override not applied"       "deny"  "Bash" "gh pr create --repo z/z --base dev --head feat/x"
+assert_decision "-R other: override not applied"           "deny"  "Bash" "gh pr create -R z/z --base dev --head feat/x"
 commit_cfg '{"allowed":[{"base":"dev","head":"work/x"}]}'
 assert_decision "specific head pair allowed"               "allow" "Bash" "gh pr create --base dev --head work/x"
 assert_decision "other head denied"                        "deny"  "Bash" "gh pr create --base dev --head work/y"
@@ -112,6 +129,160 @@ commit_cfg '{"allowedBases":["dev"]}'
 assert_decision "old/wrong schema: fail closed"            "deny"  "Bash" "gh pr create --base dev --head feat/x"
 echo '{"allowed":[{"base":"dev","head":"*"}]}' > "$NOGIT/.reconcile-gate.json"
 HOOK_CWD="$NOGIT" assert_decision "non-git dir w/ config: ignored" "deny" "Bash" "gh pr create --base dev --head feat/x"
+unset HOOK_CWD
+
+echo
+echo "─── single-trunk is POSITIVE opt-in (marker on SHA-verified origin/main) ─"
+# Absence of dev/develop must NEVER imply single-trunk (offline, shallow clone,
+# forged refs all look like "no dev"). Only the committed marker opts in.
+ST="$(mktemp -d)"; STO="$(mktemp -d)"; SH="$(mktemp -d)"
+trap 'rm -rf "$PROJ" "$NOGIT" "$ORIGIN" "$ST" "$STO" "$SH" "$STUB"' EXIT
+git init -q --bare -b main "$STO"
+S="git -C $ST -c user.email=t@t -c user.name=t"
+$S init -q -b main && link_origin "$ST" "$STO" && echo x > "$ST/f" && $S add f && $S commit -qm init && $S push -q origin main && $S fetch -q origin
+export HOOK_CWD="$ST"
+FEAT="gh pr create --base main --head feat/x --title T"
+assert_decision "no marker, no dev: feat→main DENIED"        "deny"  "Bash" "$FEAT"
+echo '{"model":"single-trunk"}' > "$ST/.reconcile-gate.json"
+assert_decision "marker in working tree only: DENIED"        "deny"  "Bash" "$FEAT"
+$S checkout -q -b feat/x && $S add .reconcile-gate.json && $S commit -qm cfg && $S push -q origin feat/x
+assert_decision "marker on feature branch only: DENIED"      "deny"  "Bash" "$FEAT"
+$S checkout -q main && $S merge -q --ff-only feat/x && $S update-ref refs/remotes/origin/main main
+assert_decision "FORGED origin/main w/ marker (unpushed): DENIED" "deny" "Bash" "$FEAT"
+# shallow clone of a repo with NO marker: still two-trunk
+git clone -q --depth=1 "file://$STO" "$SH/nomarker" 2>/dev/null; link_origin "$SH/nomarker" "$STO"
+HOOK_CWD="$SH/nomarker" assert_decision "shallow clone, no marker: DENIED" "deny" "Bash" "$FEAT"
+# publish the marker on real main
+$S push -q origin main && $S fetch -q origin
+assert_decision "marker on verified origin/main: feat→main allowed"   "allow" "Bash" "$FEAT"
+assert_decision "marker: feat→master allowed too" "allow" "Bash" "gh pr create --base master --head feat/x"
+assert_decision "marker: feat→dev still denied"              "deny"  "Bash" "gh pr create --base dev --head feat/x"
+assert_decision "marker: missing --head still denied"        "deny"  "Bash" "gh pr create --base main"
+git clone -q --depth=1 "file://$STO" "$SH/marked" 2>/dev/null; link_origin "$SH/marked" "$STO"
+HOOK_CWD="$SH/marked" assert_decision "shallow clone WITH marker: allowed" "allow" "Bash" "$FEAT"
+# marker + integration trunk present: explicit opt-in still wins
+$S push -q origin main:dev && $S fetch -q origin
+assert_decision "marker + dev present: feat→main allowed"    "allow" "Bash" "$FEAT"
+$S push -q origin --delete dev && $S fetch -q --prune origin
+# ls-remote failure => cannot verify => marker untrusted => two-trunk
+$S config --unset url."$STO".insteadOf; $S config url."$SH/does-not-exist".insteadOf "$ORIGURL"
+assert_decision "ls-remote fails: marker untrusted, DENIED"  "deny"  "Bash" "$FEAT"
+$S config --unset url."$SH/does-not-exist".insteadOf; $S config url."$STO".insteadOf "$ORIGURL"
+# malformed / wrong-model config => fail closed
+echo '{"model":"banana"}' > "$ST/.reconcile-gate.json"; $S add .reconcile-gate.json; $S commit -qm bad; $S push -q origin main
+assert_decision "unknown model value: fail closed"           "deny"  "Bash" "$FEAT"
+echo '{not json' > "$ST/.reconcile-gate.json"; $S add .reconcile-gate.json; $S commit -qm bad2; $S push -q origin main
+assert_decision "malformed config: DENIED"                   "deny"  "Bash" "$FEAT"
+# legacy equivalent: allowed main/* is the same opt-in
+echo '{"allowed":[{"base":"main","head":"*"}]}' > "$ST/.reconcile-gate.json"; $S add .reconcile-gate.json; $S commit -qm legacy; $S push -q origin main
+assert_decision "legacy allowed main/*: feat→main allowed"   "allow" "Bash" "$FEAT"
+assert_decision "bypass flag still allowed"                  "allow" "Bash" "gh pr create --base release --head x --force-anyway"
+assert_decision "--repo other: marker not applied"           "deny"  "Bash" "gh pr create --repo z/z --base main --head feat/x"
+HOOK_CWD="$NOGIT" assert_decision "git fails: feat→main denied" "deny" "Bash" "$FEAT"
+
+echo
+echo "─── always-deny: gh pr merge --admin, direct push to trunk ─"
+assert_decision "gh pr merge 5 --squash: allowed"            "allow" "Bash" "gh pr merge 5 --squash"
+assert_decision "gh pr merge 5 --admin: DENIED"              "deny"  "Bash" "gh pr merge 5 --squash --admin"
+assert_decision "gh pr merge --admin + bypass: still DENIED" "deny"  "Bash" "gh pr merge 5 --admin --force-anyway"
+assert_decision "git push origin HEAD:main: DENIED"          "deny"  "Bash" "git push origin HEAD:main"
+assert_decision "git push origin main: DENIED"               "deny"  "Bash" "git push origin main"
+assert_decision "git push -u origin HEAD:refs/heads/main: DENIED" "deny" "Bash" "git push -u origin HEAD:refs/heads/main"
+assert_decision "git push origin +feat:master: DENIED"       "deny"  "Bash" "git push origin +feat:master"
+assert_decision "git push origin :refs/heads/main: DENIED"   "deny"  "Bash" "git push origin :refs/heads/main"
+assert_decision "git push origin feat/x: allowed"            "allow" "Bash" "git push origin feat/x"
+assert_decision "git push origin HEAD:feat/main-fix: allowed" "allow" "Bash" "git push origin HEAD:feat/main-fix"
+unset HOOK_CWD
+
+echo
+echo "─── round 2: origin forgery (gh target must match origin URL) ─"
+export HOOK_CWD="$ST"
+echo '{"model":"single-trunk"}' > "$ST/.reconcile-gate.json"; $S add .reconcile-gate.json; $S commit -qm m; $S push -q origin main; $S fetch -q origin
+assert_decision "baseline: marker verified, gh target matches: allowed" "allow" "Bash" "$FEAT"
+GH_FAKE=fail assert_decision "gh repo view fails: DENIED"            "deny"  "Bash" "$FEAT"
+GH_FAKE_REPO=evil/x assert_decision "gh targets a different repo: DENIED" "deny" "Bash" "$FEAT"
+assert_decision "-R o/r matching origin: allowed"                    "allow" "Bash" "gh pr create -R o/r --base main --head feat/x"
+assert_decision "-R evil/x differs from origin: DENIED"              "deny"  "Bash" "gh pr create -R evil/x --base main --head feat/x"
+# agent repoints origin at a repo it controls (which carries the marker)
+$S remote set-url origin "https://github.com/evil/x.git"
+$S config url."$STO".insteadOf "https://github.com/evil/x.git"
+GH_FAKE_REPO=o/r assert_decision "origin repointed to evil/x: DENIED" "deny" "Bash" "$FEAT"
+$S remote set-url origin "$ORIGURL"
+# lookalike hosts must not count as GitHub
+for U in "https://github.com.evil.com/o/r.git" "https://evil.com/github.com/o/r.git"; do
+    $S remote set-url origin "$U"; $S config url."$STO".insteadOf "$U"
+    assert_decision "lookalike origin host $U: DENIED" "deny" "Bash" "$FEAT"
+done
+$S remote set-url origin "$ORIGURL"
+$S config url."$STO".insteadOf "$ORIGURL"
+assert_decision "restored origin: allowed again"  "allow" "Bash" "$FEAT"
+
+echo
+echo "─── round 2: stale master marker must not be consulted when origin/main exists ─"
+SM="$(mktemp -d)"; SMO="$(mktemp -d)"
+git init -q --bare -b main "$SMO"
+M="git -C $SM -c user.email=t@t -c user.name=t"
+$M init -q -b main && link_origin "$SM" "$SMO" && echo x > "$SM/f" && $M add f && $M commit -qm init
+echo '{"model":"single-trunk"}' > "$SM/.reconcile-gate.json"; $M add .reconcile-gate.json; $M commit -qm marker
+$M push -q origin main:master
+$M reset -q --hard HEAD~1; $M push -q origin main; $M fetch -q origin
+HOOK_CWD="$SM" assert_decision "marker only on stale origin/master (main has none): DENIED" "deny" "Bash" "$FEAT"
+rm -rf "$SM" "$SMO"
+
+echo
+echo "─── round 2: command segments and prefixes ─"
+export HOOK_CWD="$ST"
+assert_decision "cd && gh pr merge --admin"        "deny"  "Bash" "cd /tmp && gh pr merge 5 --admin"
+assert_decision "env prefix git push main"         "deny"  "Bash" "FOO=1 git push origin main"
+assert_decision "git -C . push origin main"        "deny"  "Bash" "git -C . push origin main"
+assert_decision "git -c k=v push origin main"      "deny"  "Bash" "git -c k=v push origin main"
+assert_decision "gh -R o/x pr merge --admin"       "deny"  "Bash" "gh -R o/x pr merge 5 --admin"
+assert_decision "gh --repo o/x pr merge --admin"   "deny"  "Bash" "gh --repo o/x pr merge 5 --admin"
+assert_decision "merge --admin ; echo"             "deny"  "Bash" "gh pr merge 5 --admin; echo done"
+assert_decision "merge --admin && echo"            "deny"  "Bash" "gh pr merge 5 --admin&&echo done"
+assert_decision "echo && merge --admin"            "deny"  "Bash" "echo a && gh pr merge 5 --admin"
+assert_decision "merge --admin | tee"              "deny"  "Bash" "gh pr merge 5 --admin | tee o"
+assert_decision "merge --admin after || "          "deny"  "Bash" "false || gh pr merge 5 --admin"
+assert_decision "merge --admin on 2nd line"        "deny"  "Bash" $'echo a\ngh pr merge 5 --admin'
+assert_decision "--admin=true"                     "deny"  "Bash" "gh pr merge 5 --admin=true"
+assert_decision "quoted ; is not a separator"      "allow" "Bash" "echo \"a; gh pr merge 5 --admin\""
+assert_decision "quoted && in git commit -m"       "allow" "Bash" "git commit -m \"a && b; c\""
+assert_decision "git push origin feat 2>&1"        "allow" "Bash" "git push origin feat 2>&1"
+assert_decision "chained plain merge allowed"      "allow" "Bash" "cd /tmp && gh pr merge 5 --squash"
+# the PR gate applies to every segment too (no marker => two-trunk)
+HOOK_CWD="$NOGIT" assert_decision "cd x && gh pr create feat→main: DENIED" "deny" "Bash" "cd x && gh pr create --base main --head feat/x"
+HOOK_CWD="$NOGIT" assert_decision "VAR=1 gh pr create feat→main: DENIED"   "deny" "Bash" "VAR=1 gh pr create --base main --head feat/x"
+HOOK_CWD="$NOGIT" assert_decision "gh -R o/r pr create feat→main: DENIED"  "deny" "Bash" "gh -R o/r pr create --base main --head feat/x"
+HOOK_CWD="$NOGIT" assert_decision "echo; gh pr create feat→main: DENIED"   "deny" "Bash" "echo hi; gh pr create --base main --head feat/x"
+HOOK_CWD="$NOGIT" assert_decision "dev→main chained: allowed"              "allow" "Bash" "cd x && gh pr create --base main --head dev"
+
+echo
+echo "─── round 2: pushes to main without a refspec ─"
+PB="$(mktemp -d)"; PBO="$(mktemp -d)"
+git init -q --bare -b main "$PBO"
+B="git -C $PB -c user.email=t@t -c user.name=t"
+$B init -q -b main && link_origin "$PB" "$PBO" && echo x > "$PB/f" && $B add f && $B commit -qm i && $B push -q -u origin main
+export HOOK_CWD="$PB"
+assert_decision "on main: bare git push"            "deny"  "Bash" "git push"
+assert_decision "on main: git push origin"          "deny"  "Bash" "git push origin"
+assert_decision "on main: git push origin HEAD"     "deny"  "Bash" "git push origin HEAD"
+assert_decision "on main: git push --tags"          "deny"  "Bash" "git push --tags"
+assert_decision "on main: git push origin feat/x"   "allow" "Bash" "git push origin feat/x"
+assert_decision "--all denied outright"             "deny"  "Bash" "git push --all origin"
+assert_decision "--mirror denied outright"          "deny"  "Bash" "git push --mirror origin"
+$B checkout -q -b feat/y
+assert_decision "on feature, no upstream: bare push fails closed" "deny" "Bash" "git push"
+assert_decision "on feature: git push -u origin HEAD"  "allow" "Bash" "git push -u origin HEAD"
+assert_decision "on feature: git push origin"          "allow" "Bash" "git push origin"
+$B push -q origin feat/y && $B branch -q --set-upstream-to=origin/feat/y
+assert_decision "on feature w/ upstream: bare push allowed" "allow" "Bash" "git push"
+$B branch -q --set-upstream-to=origin/main
+assert_decision "feature tracking origin/main: bare push DENIED" "deny" "Bash" "git push"
+$B config push.default upstream
+assert_decision "feature tracking origin/main: git push origin DENIED" "deny" "Bash" "git push origin"
+$B checkout -q --detach
+assert_decision "detached HEAD: git push origin HEAD fails closed" "deny" "Bash" "git push origin HEAD"
+rm -rf "$PB" "$PBO"
 unset HOOK_CWD
 
 echo

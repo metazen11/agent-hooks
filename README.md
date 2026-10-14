@@ -44,9 +44,9 @@ is behind, with the command to update. It never merges on its own. See
 
 ## Branching contract
 
-This repo enforces a branching contract: work lands on `dev`, and `dev`
-reaches `main` only through a reviewed pull request. Direct pushes to `main`
-are refused.
+This repo is **single-trunk**: feature branch → squash PR → `main`, gated by
+CI, independent code review and an auditor PASS. Direct pushes to `main` are
+refused. A human approval gate is opt-in via GitHub branch protection.
 
 **One-time setup, per machine** (not per clone):
 
@@ -63,7 +63,7 @@ git config core.hooksPath .githooks
 
 Without this step the local pre-push hook is inert — git will not let a clone
 activate its own hooks, since that would run a stranger's code on clone.
-Server-side branch protection and the `trunk-drift` check still apply
+Server-side branch protection still applies
 regardless of local setup.
 
 Full contract, including the emergency override: [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -198,7 +198,7 @@ Run `git-session/test-pre-edit-skips.sh` to verify these skip paths end-to-end.
 
 ### reconcile-gate
 
-Strict-block PreToolUse hook that enforces the global branching contract: `gh pr create` is refused unless `--base` is the production trunk (`main`/`master`) and `--head` is the integration trunk (`dev`/`develop`). Bypass with `--force-anyway`. Routine agent work lands on the integration trunk via the `reconciler` specialist / `/reconcile` skill, not via per-change PRs.
+Strict-block PreToolUse hook for the branching contract. Global model: single-trunk (feature branch → squash PR → `main`). The gate allows feature → `main` PRs only where the repo opted in with `{"model":"single-trunk"}` in `.reconcile-gate.json` on the SHA-verified `origin/main` (and origin is the repo gh targets); otherwise it fails closed to two-trunk (`--base` `main`/`master`, `--head` `dev`/`develop`). Always denies `gh pr merge --admin`, `git push` to `main`/`master` (including bare pushes from `main`, `--all`, `--mirror`) in every chained command segment. Bypass with `--force-anyway`.
 
 ```bash
 cd reconcile-gate
