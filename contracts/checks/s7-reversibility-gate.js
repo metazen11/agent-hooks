@@ -85,7 +85,12 @@ const DESTRUCTIVE_PATTERNS = [
   },
 ];
 
-const GIT_REWRITE_IDS = new Set(['git-reset-hard', 'git-push-force', 'git-branch-delete-force']);
+// Pattern id -> the one git verb its backup evidence may speak for.
+const GIT_REWRITE_VERB = {
+  'git-reset-hard': 'reset',
+  'git-push-force': 'push',
+  'git-branch-delete-force': 'branch',
+};
 
 function normalizeCommand(cmd) {
   return cmd.replace(/[\r\n]+/g, ' ').trim();
@@ -138,10 +143,13 @@ function pushBacked(toks, cwd) {
   return hasBackupTag(cwd, sha);
 }
 
-function backed(command, cwd) {
-  if (!cwd || NOT_SINGLE.test(command)) return false;
+// `raw` is the un-normalized command: newlines are command separators, so a
+// multi-line command is never a single invocation.
+function backed(id, raw, cwd) {
+  const command = raw.trim();
+  if (!cwd || /[\r\n]/.test(command) || NOT_SINGLE.test(command)) return false;
   const [git_, verb, ...rest] = command.split(/\s+/);
-  if (git_ !== 'git') return false;
+  if (git_ !== 'git' || verb !== GIT_REWRITE_VERB[id]) return false;
   if (verb === 'push') return pushBacked(rest, cwd);
   if (verb === 'reset' && rest.includes('--hard')) {
     // A tag keeps commits, not uncommitted work, so the worktree must be clean.
@@ -164,7 +172,7 @@ function checkBash(toolInput, cwd) {
 
   for (const pattern of DESTRUCTIVE_PATTERNS) {
     if (pattern.re.test(command)) {
-      if (GIT_REWRITE_IDS.has(pattern.id) && backed(command, cwd)) {
+      if (GIT_REWRITE_VERB[pattern.id] && backed(pattern.id, raw, cwd)) {
         continue;
       }
       return {

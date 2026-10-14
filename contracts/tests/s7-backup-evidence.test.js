@@ -168,6 +168,23 @@ test('deny-pattern gaps: +refspec, bundled -f, --mirror, trailing force', () => 
     assert.strictEqual(run(work, c).allow, false, c);
   }
 });
+test('B4: newline-separated commands never get evidence', () => {
+  const { work } = repo2();
+  g(work, 'tag', 'pre-head', 'HEAD');
+  g(work, 'branch', 'x', 'HEAD~1');
+  const reset = ['git reset', '--hard HEAD~1'].join(' ');
+  assert.strictEqual(run(work, reset).allow, true);
+  assert.strictEqual(run(work, `${reset}\n`).allow, true); // trailing newline is still one command
+  for (const c of [
+    `${reset}\ngit branch -D x`,
+    `${reset}\ngit push --force origin y`,
+    `${reset}\r\ngit branch -D x`,
+    `${L} origin main\ngit branch -D x`,
+    `${L} origin main\r\n${reset}`,
+  ]) {
+    assert.strictEqual(run(work, c).allow, false, JSON.stringify(c));
+  }
+});
 test('false-denial sweep: benign commands still allowed', () => {
   const { work } = repo2();
   for (const c of ['git push origin main', 'git push -u origin feat', 'git reset --soft HEAD~1',
