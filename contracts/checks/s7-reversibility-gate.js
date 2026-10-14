@@ -31,19 +31,19 @@ const DESTRUCTIVE_PATTERNS = [
   },
   {
     id: 'git-reset-hard',
-    re: /\bgit\s+reset\s+--hard\b/,
+    re: /\bgit(?:\s+(?:-C|-c|--git-dir|--work-tree)(?:=|\s+)\S+)*\s+reset\s+--hard\b/,
     category: 'git',
     hint: 'git reset --hard discards uncommitted work. Capture the current HEAD as a tag first (`git tag pre-reset-<date>`).',
   },
   {
     id: 'git-push-force',
-    re: /\bgit\s+push\s+(?:--force(?:-with-lease)?|-f)\b/,
+    re: /\bgit(?:\s+(?:-C|-c|--git-dir|--work-tree)(?:=|\s+)\S+)*\s+push\s+(?:[^&|;]*\s)?(?:--force(?:-with-lease)?|-f)\b/,
     category: 'git',
     hint: 'git push --force rewrites remote history. Use --force-with-lease at minimum, or confirm with operator.',
   },
   {
     id: 'git-branch-delete-force',
-    re: /\bgit\s+branch\s+-D\b/,
+    re: /\bgit(?:\s+(?:-C|-c|--git-dir|--work-tree)(?:=|\s+)\S+)*\s+branch\s+-D\b/,
     category: 'git',
     hint: 'git branch -D force-deletes a branch even if unmerged. Confirm the branch is truly abandoned.',
   },
@@ -104,24 +104,55 @@ function hasBackupTag(cwd, sha) {
   return !!sha && git(cwd, ['tag', '--list', 'backup/*', 'pre-*', '--points-at', sha]) !== '';
 }
 
-// The commit a backup tag must point at, or '' when the rewrite is not
-// backup-satisfiable (bare --force, unresolvable ref). '' never matches a tag.
-function rewriteTarget(id, command, cwd) {
-  if (id === 'git-reset-hard') return git(cwd, ['rev-parse', 'HEAD']);
-  if (id === 'git-branch-delete-force') {
-    const m = /\bgit\s+branch\s+-D\s+([^\s&|;]+)/.exec(command);
-    return m ? git(cwd, ['rev-parse', `refs/heads/${m[1]}`]) : '';
+// Fail closed: every unparseable or ambiguous shape returns false.
+// Values-taking push options (-o, --repo, --receive-pack, ...) would shift
+// the positionals, so any option outside this allowlist denies.
+const PUSH_FLAGS_OK = /^(?:--force-with-lease(?:=\S*)?|-u|--set-upstream|-q|--quiet|-v|--verbose|--no-verify)$/;
+
+// true when this single `git push` segment is backed (or is not a force push).
+function pushBacked(seg, cwd) {
+  const toks = seg.split(/\s+/).filter(Boolean);
+  const forced = toks.some((t) => /^(?:--force(?:-with-lease(?:=\S*)?)?|-f)$/.test(t));
+  if (!forced) return true;
+  if (toks.some((t) => /^(?:--force|-f)$/.test(t))) return false; // bare force: never backed
+  const flags = toks.filter((t) => t.startsWith('-'));
+  if (!flags.every((t) => PUSH_FLAGS_OK.test(t))) return false;
+  const pos = toks.filter((t) => !t.startsWith('-'));
+  if (pos.length !== 2) return false; // explicit remote + exactly one refspec
+  const [remote, spec] = pos;
+  const dst = spec.replace(/^\+/, '').split(':');
+  if (dst.length > 2 || !dst[0] || !dst[dst.length - 1]) return false;
+  const branch = dst[dst.length - 1].replace(/^refs\/heads\//, '');
+  const lease = /^--force-with-lease=[^:\s]+:(\S+)$/.exec(toks.find((t) => t.startsWith('--force-with-lease')));
+  const sha = lease
+    ? git(cwd, ['rev-parse', '--verify', '-q', `${lease[1]}^{commit}`])
+    : git(cwd, ['rev-parse', '--verify', '-q', `refs/remotes/${remote}/${branch}`]);
+  return hasBackupTag(cwd, sha);
+}
+
+// Evidence for EVERY occurrence of the matched rewrite, in the hook's cwd only.
+function backed(id, command, cwd) {
+  if (!cwd) return false;
+  // Commands that retarget git elsewhere: the tag lookup would be in the wrong repo.
+  if (/(?:^|[\s;&|])cd\s|\s-C\s|--git-dir|--work-tree/.test(command)) return false;
+  if (id === 'git-push-force') {
+    const segs = [...command.matchAll(/\bgit\s+push\s+([^&|;]*)/g)].map((m) => m[1]);
+    return segs.length > 0 && segs.every((s) => pushBacked(s, cwd));
   }
-  if (id !== 'git-push-force') return '';
-  const push = /\bgit\s+push\s+([^&|;]*)/.exec(command)[1];
-  // Bare --force / -f stays denied; only --force-with-lease is backup-satisfiable.
-  if (/(?:^|\s)(?:--force|-f)(?=\s|$)/.test(push) || !/--force-with-lease\b/.test(push)) return '';
-  const pos = push.split(/\s+/).filter((a) => a && !a.startsWith('-'));
-  const remote = pos[0] || 'origin';
-  const dst = pos[1]
-    ? pos[1].replace(/^\+/, '').split(':').pop()
-    : git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
-  return git(cwd, ['rev-parse', `refs/remotes/${remote}/${dst.replace(/^refs\/heads\//, '')}`]);
+  if (id === 'git-reset-hard') {
+    // One reset only (a second would discard a different HEAD); a tag keeps
+    // commits, not uncommitted work, so the worktree must be clean.
+    if ((command.match(/\bgit\s+reset\s+--hard\b/g) || []).length !== 1) return false;
+    if (git(cwd, ['status', '--porcelain']) !== '') return false;
+    return hasBackupTag(cwd, git(cwd, ['rev-parse', 'HEAD']));
+  }
+  if (id === 'git-branch-delete-force') {
+    const names = [...command.matchAll(/\bgit\s+branch\s+-D\s+([^&|;]*)/g)]
+      .flatMap((m) => m[1].split(/\s+/).filter(Boolean));
+    return names.length > 0 && names.every((n) => !n.startsWith('-')
+      && hasBackupTag(cwd, git(cwd, ['rev-parse', '--verify', '-q', `refs/heads/${n}`])));
+  }
+  return false;
 }
 
 function checkBash(toolInput, cwd) {
@@ -132,7 +163,7 @@ function checkBash(toolInput, cwd) {
 
   for (const pattern of DESTRUCTIVE_PATTERNS) {
     if (pattern.re.test(command)) {
-      if (cwd && hasBackupTag(cwd, rewriteTarget(pattern.id, command, cwd))) {
+      if (backed(pattern.id, command, cwd)) {
         continue;
       }
       return {
