@@ -11,9 +11,17 @@ Every Bash tool call is inspected. If the command starts with `gh pr create`, th
 
 Absence of a `dev`/`develop` branch does **not** imply single-trunk: offline, shallow clones (`actions/checkout`) and forged local refs all look like "no dev", so detection by absence would fail open. A missing, malformed, unverifiable (ls-remote failure/timeout), working-tree-only or feature-branch-only config keeps the two-trunk rule.
 
-Always denied (even with `--force-anyway`): `gh pr merge --admin`, and `git push <remote> main|HEAD:main|:refs/heads/main` (same for `master`).
+**Origin must be the repo gh targets.** Config is trusted only if `remote.origin.url` names the same GitHub `owner/repo` that gh will act on (`-R`/`--repo` if given, else `gh repo view`, 1500ms timeout). A repointed origin (`git remote set-url`), a gh failure/timeout, or a non-GitHub URL means two-trunk. Only the first existing trunk ref is consulted (`origin/main`; `origin/master` only when `origin/main` does not exist), so a stale `origin/master` marker is never used.
 
-**Residual risk:** MCP tools (e.g. anvil `create_pr` / `git_push`) are not Bash calls and bypass this hook entirely. Close that with GitHub branch protection (required reviews and checks, `enforce_admins`), which is server-side.
+**Every segment is inspected.** The command is split on `;`, `&&`, `||`, `|`, `&` and newlines (quote-aware); per segment, leading `VAR=val` and git/gh global options (`git -C <dir> -c k=v`, `gh -R <repo>`) are stripped before matching, so `cd x && gh pr merge 5 --admin` and `FOO=1 git push origin main` are caught, and `cd x && gh pr create ...` is gated.
+
+Always denied (even with `--force-anyway`):
+- `gh pr merge --admin` / `--admin=true`;
+- `git push` with a refspec targeting `main`/`master` (`main`, `HEAD:main`, `+x:refs/heads/master`, `:refs/heads/main`), **regardless of remote name** (conservative);
+- `git push --all` / `--mirror`;
+- a push that lands on the current branch (bare `git push`, `git push origin`, `... HEAD`, `--tags`) when that branch, or the bare push's `@{push}` target, is `main`/`master`. Detached HEAD or an unresolvable branch/upstream fails closed (use `git push -u origin HEAD:<branch>`).
+
+**Residual risks:** the threat model is accidental misuse, not an adversary: an adversarial agent can still use `--force-anyway` or evade the splitter (`bash -c "..."`, `$(...)`, wrappers like `env`/`sudo`, aliases; the `cd` of a chained command is not followed for cwd). Flags that take a value (`git push -o x`) can shift positional parsing. Non-JSON stdin falls through to the host default (pre-existing). MCP tools (e.g. anvil `create_pr` / `git_push`) are not Bash calls and bypass this hook entirely. Close that with GitHub branch protection (required reviews and checks, `enforce_admins`), which is server-side.
 
 Human approval is opt-in per repo through GitHub branch protection (required approving reviews on `main`, optionally CODEOWNERS), not through this hook. Agents never approve or merge in a human-gated repo.
 
@@ -59,7 +67,7 @@ After install, restart Claude Code to activate.
 ./reconcile-gate/test-reconcile-gate.sh
 ```
 
-Runs 65 cases covering allow/deny paths, the per-project override, the single-trunk opt-in (shallow clone, ls-remote failure, forged ref, working-tree/feature-branch-only and malformed config all deny), and the always-deny rules.
+Runs 104 cases covering allow/deny paths, the per-project override, the single-trunk opt-in (shallow clone, ls-remote failure, forged ref, repointed origin, gh failure, stale master marker, working-tree/feature-branch-only and malformed config all deny), command prefixes/chains, and the always-deny rules. The suite stubs `gh` on PATH and gives fixture repos a GitHub-style origin URL routed by `url.<bare>.insteadOf`.
 
 ## Decision matrix
 
