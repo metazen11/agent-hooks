@@ -130,6 +130,53 @@ test('value-taking push options shift positionals -> deny', () => {
   assert.strictEqual(run(work, `${L} -o ci.skip origin main`).allow, false);
 });
 
+// ── review round 2 ──────────────────────────────────────────
+test('B1: lease ref must name the pushed branch', () => {
+  const { work, tip } = repo2();
+  assert.strictEqual(run(work, `${L}=main:${tip} origin main`).allow, true);
+  assert.strictEqual(run(work, `${L}=refs/heads/main:${tip} origin main`).allow, true);
+  assert.strictEqual(run(work, `${L}=zzz:${tip} origin main`).allow, false);
+  assert.strictEqual(run(work, `${L}=zzz origin main`).allow, false);
+});
+test('B2: more than one lease token -> deny', () => {
+  const { work, tip, dev } = repo2();
+  const F = '--force-with-lease';
+  assert.strictEqual(run(work, `git push ${F}=main:${tip} ${F}=main:${dev} origin main`).allow, false);
+  assert.strictEqual(run(work, `git push ${F} ${F} origin main`).allow, false);
+});
+test('B3: chained commands never get evidence', () => {
+  const { work } = repo2();
+  g(work, 'tag', 'pre-head', 'HEAD');
+  const reset = ['git reset', '--hard'].join(' ');
+  assert.strictEqual(run(work, reset).allow, true);
+  for (const c of [
+    `git tag -d pre-head && ${reset}`,
+    `git checkout dev && ${reset}`,
+    `${reset}; echo x`,
+    `echo $(${reset})`,
+    `GIT_DIR=/tmp/x ${reset}`,
+    `pushd /tmp && ${reset}`,
+    `${L}=main:abc origin main | cat`,
+  ]) {
+    assert.strictEqual(run(work, c).allow, false, c);
+  }
+});
+test('deny-pattern gaps: +refspec, bundled -f, --mirror, trailing force', () => {
+  const { work } = repo2();
+  for (const c of ['git push origin +main', 'git push origin +feat:main', 'git push -fu origin main',
+    'git push -uf origin main', 'git push --mirror origin', 'git push origin main --force']) {
+    assert.strictEqual(run(work, c).allow, false, c);
+  }
+});
+test('false-denial sweep: benign commands still allowed', () => {
+  const { work } = repo2();
+  for (const c of ['git push origin main', 'git push -u origin feat', 'git reset --soft HEAD~1',
+    'git log --grep=reset', 'git commit -m "force push guard"', 'git push origin feature-f',
+    'git push --set-upstream origin f-x']) {
+    assert.strictEqual(run(work, c).allow, true, c);
+  }
+});
+
 // ── stdin -> contracts-hook.js: pins cwd plumbing ───────────
 function hook(cwd, command) {
   const out = execFileSync('node', [path.join(__dirname, '..', 'contracts-hook.js')], {

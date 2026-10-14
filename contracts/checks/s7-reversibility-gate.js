@@ -37,7 +37,7 @@ const DESTRUCTIVE_PATTERNS = [
   },
   {
     id: 'git-push-force',
-    re: /\bgit(?:\s+(?:-C|-c|--git-dir|--work-tree)(?:=|\s+)\S+)*\s+push\s+(?:[^&|;]*\s)?(?:--force(?:-with-lease)?|-f)\b/,
+    re: /\bgit(?:\s+(?:-C|-c|--git-dir|--work-tree)(?:=|\s+)\S+)*\s+push\s+(?:[^&|;]*\s)?(?:(?:--force(?:-with-lease)?|-[a-zA-Z]*f[a-zA-Z]*|--mirror)\b|\+\S)/,
     category: 'git',
     hint: 'git push --force rewrites remote history. Use --force-with-lease at minimum, or confirm with operator.',
   },
@@ -85,6 +85,8 @@ const DESTRUCTIVE_PATTERNS = [
   },
 ];
 
+const GIT_REWRITE_IDS = new Set(['git-reset-hard', 'git-push-force', 'git-branch-delete-force']);
+
 function normalizeCommand(cmd) {
   return cmd.replace(/[\r\n]+/g, ' ').trim();
 }
@@ -105,50 +107,49 @@ function hasBackupTag(cwd, sha) {
 }
 
 // Fail closed: every unparseable or ambiguous shape returns false.
-// Values-taking push options (-o, --repo, --receive-pack, ...) would shift
-// the positionals, so any option outside this allowlist denies.
+// Evidence is granted only to a lone, plain `git <verb> ...` invocation. Any
+// chaining, substitution, quoting, env prefix or repo retargeting (cd, -C,
+// --git-dir, GIT_DIR=, core.worktree) means the tag lookup in the hook cwd
+// could describe a different repo/state than the one acted on, so deny.
+// Quoted tokens (`git "push" --force`) are beyond what a regex gate can see.
+const NOT_SINGLE = /[;&|`<>$()"'\\]|\s-[Cc]\s|--git-dir|--work-tree|\bGIT_\w+=|\bpushd\b|\bcd\b|core\.worktree/;
+// Value-taking push options (-o, --repo, --receive-pack, ...) would shift the
+// positionals, so any option outside this allowlist denies.
 const PUSH_FLAGS_OK = /^(?:--force-with-lease(?:=\S*)?|-u|--set-upstream|-q|--quiet|-v|--verbose|--no-verify)$/;
 
-// true when this single `git push` segment is backed (or is not a force push).
-function pushBacked(seg, cwd) {
-  const toks = seg.split(/\s+/).filter(Boolean);
-  const forced = toks.some((t) => /^(?:--force(?:-with-lease(?:=\S*)?)?|-f)$/.test(t));
-  if (!forced) return true;
-  if (toks.some((t) => /^(?:--force|-f)$/.test(t))) return false; // bare force: never backed
-  const flags = toks.filter((t) => t.startsWith('-'));
-  if (!flags.every((t) => PUSH_FLAGS_OK.test(t))) return false;
+// toks: tokens after `git push`. Exactly one --force-with-lease, one explicit
+// remote and one refspec; the lease (if it names a ref/sha) must be for that branch.
+function pushBacked(toks, cwd) {
+  if (!toks.filter((t) => t.startsWith('-')).every((t) => PUSH_FLAGS_OK.test(t))) return false;
+  const leases = toks.filter((t) => t.startsWith('--force-with-lease'));
+  if (leases.length !== 1) return false;
   const pos = toks.filter((t) => !t.startsWith('-'));
-  if (pos.length !== 2) return false; // explicit remote + exactly one refspec
+  if (pos.length !== 2 || pos[1].startsWith('+')) return false;
   const [remote, spec] = pos;
-  const dst = spec.replace(/^\+/, '').split(':');
-  if (dst.length > 2 || !dst[0] || !dst[dst.length - 1]) return false;
-  const branch = dst[dst.length - 1].replace(/^refs\/heads\//, '');
-  const lease = /^--force-with-lease=[^:\s]+:(\S+)$/.exec(toks.find((t) => t.startsWith('--force-with-lease')));
-  const sha = lease
-    ? git(cwd, ['rev-parse', '--verify', '-q', `${lease[1]}^{commit}`])
+  const parts = spec.split(':');
+  if (parts.length > 2 || parts.some((p) => !p)) return false;
+  const branch = parts[parts.length - 1].replace(/^refs\/heads\//, '');
+  const m = /^--force-with-lease=([^:]+)(?::(.+))?$/.exec(leases[0]);
+  if (leases[0] !== '--force-with-lease' && !m) return false;
+  if (m && m[1].replace(/^refs\/heads\//, '') !== branch) return false;
+  const sha = m && m[2]
+    ? git(cwd, ['rev-parse', '--verify', '-q', `${m[2]}^{commit}`])
     : git(cwd, ['rev-parse', '--verify', '-q', `refs/remotes/${remote}/${branch}`]);
   return hasBackupTag(cwd, sha);
 }
 
-// Evidence for EVERY occurrence of the matched rewrite, in the hook's cwd only.
-function backed(id, command, cwd) {
-  if (!cwd) return false;
-  // Commands that retarget git elsewhere: the tag lookup would be in the wrong repo.
-  if (/(?:^|[\s;&|])cd\s|\s-C\s|--git-dir|--work-tree/.test(command)) return false;
-  if (id === 'git-push-force') {
-    const segs = [...command.matchAll(/\bgit\s+push\s+([^&|;]*)/g)].map((m) => m[1]);
-    return segs.length > 0 && segs.every((s) => pushBacked(s, cwd));
+function backed(command, cwd) {
+  if (!cwd || NOT_SINGLE.test(command)) return false;
+  const [git_, verb, ...rest] = command.split(/\s+/);
+  if (git_ !== 'git') return false;
+  if (verb === 'push') return pushBacked(rest, cwd);
+  if (verb === 'reset' && rest.includes('--hard')) {
+    // A tag keeps commits, not uncommitted work, so the worktree must be clean.
+    return git(cwd, ['status', '--porcelain']) === ''
+      && hasBackupTag(cwd, git(cwd, ['rev-parse', 'HEAD']));
   }
-  if (id === 'git-reset-hard') {
-    // One reset only (a second would discard a different HEAD); a tag keeps
-    // commits, not uncommitted work, so the worktree must be clean.
-    if ((command.match(/\bgit\s+reset\s+--hard\b/g) || []).length !== 1) return false;
-    if (git(cwd, ['status', '--porcelain']) !== '') return false;
-    return hasBackupTag(cwd, git(cwd, ['rev-parse', 'HEAD']));
-  }
-  if (id === 'git-branch-delete-force') {
-    const names = [...command.matchAll(/\bgit\s+branch\s+-D\s+([^&|;]*)/g)]
-      .flatMap((m) => m[1].split(/\s+/).filter(Boolean));
+  if (verb === 'branch' && rest[0] === '-D') {
+    const names = rest.slice(1);
     return names.length > 0 && names.every((n) => !n.startsWith('-')
       && hasBackupTag(cwd, git(cwd, ['rev-parse', '--verify', '-q', `refs/heads/${n}`])));
   }
@@ -163,7 +164,7 @@ function checkBash(toolInput, cwd) {
 
   for (const pattern of DESTRUCTIVE_PATTERNS) {
     if (pattern.re.test(command)) {
-      if (backed(pattern.id, command, cwd)) {
+      if (GIT_REWRITE_IDS.has(pattern.id) && backed(command, cwd)) {
         continue;
       }
       return {
