@@ -195,7 +195,7 @@ When two sections conflict, the *more specific* section wins. When still ambiguo
 ### Evidence of Compliance
 - Pre-tool hook fires and finds either a confirmation or a backup step in the recent history.
 - For database operations, a `pg_dump` / snapshot precedes the destructive DDL.
-- For git rewrites, the pre-rewrite ref is captured (e.g., as a tag).
+- For git rewrites, the pre-rewrite ref is captured (e.g., as a tag). The hook accepts a local tag named `backup/*` or `pre-*` pointing at the commit being lost: the remote-tracking tip for `git push --force-with-lease` (bare `--force` is never satisfied), `HEAD` for `git reset --hard`, the branch tip for `git branch -D`. Evidence is accepted only when the whole command is one plain git invocation (no chaining, substitution, quoting, env prefix, `cd`/`-C`/`--git-dir`), as a single `--force-with-lease` push to one explicit remote and refspec whose lease (if it names a ref) is that branch, or a clean-worktree reset; anything else is denied. Tags are not checked for age, and quoted tokens (`git "push" --force`) are outside what a regex gate can see.
 
 ### Consequences of Breach
 - Pre-tool hook blocks the destructive tool call and returns a `deny` with the missing-precondition list.

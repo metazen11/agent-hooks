@@ -7,7 +7,7 @@
   "scripts": {
     "install-hooks": "node install.js",
     "uninstall-hooks": "node install.js --uninstall",
-    "test": "node test.js"
+    "test": "node test.js && node --test tests/*.test.js"
   },
   "files": [
     "contracts-hook.js",

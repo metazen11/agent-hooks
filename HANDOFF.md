@@ -8,6 +8,7 @@
 - `contracts` §7: destructive literals as *content* (heredoc/inline script) must go through Write/Edit — the §7 scan is over the raw Bash string. Obeyed, not evaded.
 - Earlier: §6 self-edit carve-out (`bec2ca4`).
 - **Open follow-ups:** (1) etrade needs its own `.reconcile-gate.json` merged to etrade `main` (override is inert until then); (2) root fix: make the §7 scan ignore heredoc bodies; (3) background review flagged "parser-differential" in the hand-rolled tokenizer vs `gh` flag parsing — unverified, investigate; (4) etrade hooks unification (`core.hooksPath` dead across worktrees, `install_wizard.sh` installs no hooks) — decided "unify into one entry point", not started.
+- **Shipped (PR #19 → main `78cb126`). Post-merge security-review findings, UNTRIAGED (titles only, no detail seen):** "fail-open-state-drift", "parser-differential / authorization bypass", "sandbox-escape / code execution via repo-controlled git config" (the hook runs `git`/`ls-remote` inside an untrusted repo: consider `-c core.fsmonitor=` / `GIT_CONFIG_NOSYSTEM`, `protocol.ext.allow=never`, remote-URL allowlist), plus one more. Also no test for the origin/main-stale / origin/master-valid fallthrough. Triage next session.
 - Override trust: tracking ref must equal `git ls-remote origin` (5s timeout); offline/forged => defaults. Concatenated `-R/-B/-H` handled.
 
 
