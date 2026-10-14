@@ -20,6 +20,8 @@
 
 'use strict';
 
+const { execFileSync } = require('child_process');
+
 const DESTRUCTIVE_PATTERNS = [
   {
     id: 'rm-rf',
@@ -87,7 +89,42 @@ function normalizeCommand(cmd) {
   return cmd.replace(/[\r\n]+/g, ' ').trim();
 }
 
-function checkBash(toolInput) {
+function git(cwd, args) {
+  try {
+    return execFileSync('git', ['-C', cwd, ...args], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+// §7 evidence: a backup/* or pre-* tag pointing at the commit about to be lost.
+function hasBackupTag(cwd, sha) {
+  return !!sha && git(cwd, ['tag', '--list', 'backup/*', 'pre-*', '--points-at', sha]) !== '';
+}
+
+// The commit a backup tag must point at, or '' when the rewrite is not
+// backup-satisfiable (bare --force, unresolvable ref). '' never matches a tag.
+function rewriteTarget(id, command, cwd) {
+  if (id === 'git-reset-hard') return git(cwd, ['rev-parse', 'HEAD']);
+  if (id === 'git-branch-delete-force') {
+    const m = /\bgit\s+branch\s+-D\s+([^\s&|;]+)/.exec(command);
+    return m ? git(cwd, ['rev-parse', `refs/heads/${m[1]}`]) : '';
+  }
+  if (id !== 'git-push-force') return '';
+  const push = /\bgit\s+push\s+([^&|;]*)/.exec(command)[1];
+  // Bare --force / -f stays denied; only --force-with-lease is backup-satisfiable.
+  if (/(?:^|\s)(?:--force|-f)(?=\s|$)/.test(push) || !/--force-with-lease\b/.test(push)) return '';
+  const pos = push.split(/\s+/).filter((a) => a && !a.startsWith('-'));
+  const remote = pos[0] || 'origin';
+  const dst = pos[1]
+    ? pos[1].replace(/^\+/, '').split(':').pop()
+    : git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  return git(cwd, ['rev-parse', `refs/remotes/${remote}/${dst.replace(/^refs\/heads\//, '')}`]);
+}
+
+function checkBash(toolInput, cwd) {
   const raw = toolInput && toolInput.command;
   if (typeof raw !== 'string') return { allow: true };
 
@@ -95,6 +132,9 @@ function checkBash(toolInput) {
 
   for (const pattern of DESTRUCTIVE_PATTERNS) {
     if (pattern.re.test(command)) {
+      if (cwd && hasBackupTag(cwd, rewriteTarget(pattern.id, command, cwd))) {
+        continue;
+      }
       return {
         allow: false,
         reason: buildReason(pattern, command.slice(0, 200)),
@@ -122,13 +162,19 @@ function buildReason(pattern, sample) {
     '  3. If this pattern is safe in a documented context, add a standing',
     '     authorization to the project CLAUDE.md and cite it here',
     '',
+    'Backup evidence the gate accepts for git rewrites: a local tag named',
+    'backup/* or pre-* pointing at the commit being overwritten/discarded:',
+    '  push --force-with-lease: git tag backup/<name> <remote-tracking sha>  (bare --force is never satisfied)',
+    '  reset --hard:            git tag backup/<name> HEAD',
+    '  branch -D <b>:           git tag backup/<name> <b>',
+    '',
     'Operator authorization for one action does NOT authorize the same action',
     'in a different context — scope of authorization matches scope of request.',
   ].join('\n');
 }
 
-function check(toolName, toolInput) {
-  if (toolName === 'Bash') return checkBash(toolInput);
+function check(toolName, toolInput, ctx) {
+  if (toolName === 'Bash') return checkBash(toolInput, ctx && ctx.cwd);
   return { allow: true };
 }
 

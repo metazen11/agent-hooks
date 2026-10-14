@@ -128,11 +128,11 @@ function loadChecks(dir) {
  * @param {object} toolInput Tool-specific input payload.
  * @returns {object} A hookSpecificOutput envelope.
  */
-function dispatch(checks, toolName, toolInput) {
+function dispatch(checks, toolName, toolInput, ctx) {
   for (const entry of checks) {
     let result;
     try {
-      result = entry.check(toolName, toolInput);
+      result = entry.check(toolName, toolInput, ctx);
     } catch (e) {
       process.stderr.write(
         `[contracts] ${entry.id} threw: ${e.message}\n`
@@ -178,7 +178,9 @@ function main(raw) {
     return;
   }
 
-  respond(dispatch(checks, toolName, toolInput));
+  respond(dispatch(checks, toolName, toolInput, {
+    cwd: data && typeof data.cwd === 'string' ? data.cwd : undefined,
+  }));
 }
 
 // ── stdin plumbing ─────────────────────────────────────────
