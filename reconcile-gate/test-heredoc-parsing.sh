@@ -18,9 +18,11 @@ allow "$cat_script"
 deny "$bash_script"
 allow 'echo "\$(git push origin main)"'
 deny 'echo "$(git push origin main)"'
+allow "printf '%s\\n' 'git push /repo/main'"
 deny $'cat <<\x27EOF\x27 | /bin/bash\ngit push origin main\nEOF'
 deny $'cat <<\x27EOF\x27\nprose mentions git push origin main\nEOF\ngit push origin main'
 deny $'echo "fake <<EOF"\ngit push origin main'
 deny $'cat <<EOF\n$(git push origin main)\nEOF'
 deny $'cat <<END-DOC\nprose\nEND-DOC\ngit push origin main'
+deny $'cat <<\x27END DOC\x27\nprose\nEND DOC\ngit push origin main'
 echo "heredoc parsing cases passed"

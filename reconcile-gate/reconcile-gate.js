@@ -224,7 +224,12 @@ function hereDocMarker(line) {
         while (/\s/.test(line[j] || '')) j++;
         const q = line[j] === "'" || line[j] === '"' ? line[j++] : null;
         const start = j;
-        while (/[A-Za-z0-9_.-]/.test(line[j] || '')) j++;
+        if (q) {
+            while (j < line.length && line[j] !== q) j++;
+            if (line[j] !== q) return null;
+        } else {
+            while (/[A-Za-z0-9_.-]/.test(line[j] || '')) j++;
+        }
         if (j === start) return null;
         return { index: i, delimiter: line.slice(start, j), quoted: !!q };
     }

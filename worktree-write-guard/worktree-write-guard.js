@@ -166,7 +166,13 @@ function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, initial
         const result = scanBashSegmentForOutOfWorktreeWrites(segment, repoRoot, worktreeRoot, effectiveCwd);
         if (result) return result;
     }
-    for (const body of commandSubstitutions(sanitizedCommand)) {
+    const nestedBodies = commandSubstitutions(sanitizedCommand);
+    // commandSubstitutions intentionally ignores apostrophes inside a double
+    // quoted string; add substitutions found in that shell-valid context.
+    for (const match of sanitizedCommand.matchAll(/"[^"\n]*(?<!\\)\$\(([^()\n]*)\)[^"\n]*"/g)) {
+        nestedBodies.push(match[1]);
+    }
+    for (const body of nestedBodies) {
         const result = scanBashForOutOfWorktreeWrites(body, repoRoot, worktreeRoot, effectiveCwd);
         if (result) return result;
     }
@@ -185,6 +191,14 @@ function commandSubstitutions(command) {
     for (let i = 0; i < command.length; i++) {
         const ch = command[i];
         if (quote) {
+            if (quote === '"' && command.startsWith('$(', i) && command[i - 1] !== '\\') {
+                let depth = 1, end = i + 2;
+                for (; end < command.length && depth; end++) {
+                    if (command[end] === '(') depth++;
+                    else if (command[end] === ')') depth--;
+                }
+                if (!depth) { bodies.push(command.slice(i + 2, end - 1)); i = end - 1; continue; }
+            }
             if (ch === quote && command[i - 1] !== '\\') quote = null;
             continue;
         }
@@ -267,7 +281,12 @@ function hereDocMarker(line) {
         while (/\s/.test(line[j] || '')) j++;
         const q = line[j] === "'" || line[j] === '"' ? line[j++] : null;
         const start = j;
-        while (/[A-Za-z0-9_.-]/.test(line[j] || '')) j++;
+        if (q) {
+            while (j < line.length && line[j] !== q) j++;
+            if (line[j] !== q) return null;
+        } else {
+            while (/[A-Za-z0-9_.-]/.test(line[j] || '')) j++;
+        }
         if (j === start) return null;
         return { index: i, delimiter: line.slice(start, j), quoted: !!q };
     }
