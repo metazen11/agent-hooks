@@ -152,8 +152,166 @@ function isSanctionedPath(absPath) {
 
 // For Bash: extract candidate write-target paths and detect write intent.
 // We don't try to parse bash — we look for the common patterns.
-function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot) {
+function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, initialCwd) {
     if (!command || typeof command !== 'string') return null;
+
+    // Inspect shell segments independently. A path and a write verb elsewhere
+    // in a prose/heredoc command must not combine into a false positive.
+    const sanitizedCommand = stripNonExecutableHereDocs(command);
+    const repoPaths = extractRepoPaths(sanitizedCommand, repoRoot);
+    const outsideRepoPaths = repoPaths.filter(candidate => !isInsideWorktree(candidate, worktreeRoot));
+    if (/\bxargs\b/.test(sanitizedCommand) && outsideRepoPaths.length > 0 && /\b(?:rm|mv|cp|touch|mkdir|tee)\b/.test(sanitizedCommand)) {
+        return { offending: outsideRepoPaths, commandSnippet: command.slice(0, 200) };
+    }
+    const segments = splitShellSegments(sanitizedCommand);
+    let effectiveCwd = path.resolve(initialCwd || worktreeRoot);
+    for (const segment of segments) {
+        const cdTarget = parseCdTarget(segment, effectiveCwd);
+        if (cdTarget) { effectiveCwd = cdTarget; continue; }
+        const result = scanBashSegmentForOutOfWorktreeWrites(segment, repoRoot, worktreeRoot, effectiveCwd);
+        if (result) return result;
+    }
+    const nestedBodies = commandSubstitutions(sanitizedCommand);
+    // commandSubstitutions intentionally ignores apostrophes inside a double
+    // quoted string; add substitutions found in that shell-valid context.
+    for (const quoted of sanitizedCommand.matchAll(/"([^"\n]*)"/g)) {
+        for (const match of quoted[1].matchAll(/(?<!\\)\$\(([^()\n]*)\)/g)) {
+            nestedBodies.push(match[1]);
+        }
+    }
+    for (const body of nestedBodies) {
+        const result = scanBashForOutOfWorktreeWrites(body, repoRoot, worktreeRoot, effectiveCwd);
+        if (result) return result;
+    }
+    return null;
+}
+
+// Return only canonical paths rooted at repoRoot. The separator boundary is
+// important: /repo-sibling must not be treated as /repo, and paths under the
+// current agent worktree are allowed by the same boundary check used below.
+function extractRepoPaths(command, repoRoot) {
+    const escapedRoot = repoRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`${escapedRoot}(?=\\/|\\s|['"|;&]|$)[^\\s\\'"|;&]*`, 'g');
+    return Array.from(new Set(command.match(pattern) || []));
+}
+
+function parseCdTarget(command, cwd) {
+    if (/[>&|;]/.test(command)) return null;
+    const m = command.match(/^\s*\(*\s*cd\s+(?:--\s+)?([^\s;|&]+)/);
+    return m ? path.resolve(cwd, m[1].replace(/^['"]|['"]$/g, '')) : null;
+}
+
+function commandSubstitutions(command) {
+    const bodies = [];
+    let quote = null;
+    for (let i = 0; i < command.length; i++) {
+        const ch = command[i];
+        if (quote) {
+            if (quote === '"' && command.startsWith('$(', i) && command[i - 1] !== '\\') {
+                let depth = 1, end = i + 2;
+                for (; end < command.length && depth; end++) {
+                    if (command[end] === '(') depth++;
+                    else if (command[end] === ')') depth--;
+                }
+                if (!depth) { bodies.push(command.slice(i + 2, end - 1)); i = end - 1; continue; }
+            }
+            if (ch === quote && command[i - 1] !== '\\') quote = null;
+            continue;
+        }
+        if (ch === "'") { quote = ch; continue; }
+        if (ch === '`') {
+            const end = command.indexOf('`', i + 1);
+            if (end !== -1) { bodies.push(command.slice(i + 1, end)); i = end; }
+            continue;
+        }
+        if (command.startsWith('$(', i) && command[i - 1] !== '\\') {
+            let depth = 1, end = i + 2, innerQuote = null;
+            for (; end < command.length && depth; end++) {
+                const c = command[end];
+                if (innerQuote) { if (c === innerQuote && command[end - 1] !== '\\') innerQuote = null; continue; }
+                if (c === "'" || c === '"') { innerQuote = c; continue; }
+                if (c === '(') depth++;
+                else if (c === ')') depth--;
+            }
+            if (!depth) { bodies.push(command.slice(i + 2, end - 1)); i = end - 1; }
+        }
+    }
+    return bodies;
+}
+
+function splitShellSegments(command) {
+    const segments = [];
+    let cur = '', quote = null;
+    for (let i = 0; i < command.length; i++) {
+        const ch = command[i];
+        if (quote) {
+            cur += ch;
+            if (ch === quote && command[i - 1] !== '\\') quote = null;
+        } else if (ch === "'" || ch === '"') {
+            quote = ch; cur += ch;
+        } else if (ch === ';' || ch === '\n' || ch === '&' || ch === '|') {
+            if (cur.trim()) segments.push(cur.trim());
+            cur = '';
+            if ((ch === '&' || ch === '|') && command[i + 1] === ch) i++;
+        } else cur += ch;
+    }
+    if (cur.trim()) segments.push(cur.trim());
+    return segments;
+}
+
+function stripNonExecutableHereDocs(command) {
+    const lines = String(command || '').split('\n');
+    const out = [];
+    let delimiter = null;
+    let delimiterQuoted = false;
+    for (const line of lines) {
+        if (delimiter) {
+            if (line.trim() === delimiter) { delimiter = null; delimiterQuoted = false; }
+            else if (!delimiterQuoted) out.push(line);
+            continue;
+        }
+        const marker = hereDocMarker(line);
+        if (marker) {
+            const before = line.slice(0, marker.index).trim();
+            const first = before.split(/\s+/)[0];
+            const executablePipeline = /\|\s*(?:env\s+)?(?:[\w.-]+\/|\/[^\s|;&]+\/|\/)?(?:bash|sh|zsh|node)\b/.test(line);
+            if (['cat', 'echo', 'printf', 'tee'].includes(first) && !executablePipeline) {
+                delimiter = marker.delimiter;
+                delimiterQuoted = marker.quoted;
+            }
+        }
+        out.push(line);
+    }
+    return out.join('\n');
+}
+
+function hereDocMarker(line) {
+    let quote = null;
+    for (let i = 0; i < line.length - 1; i++) {
+        const ch = line[i];
+        if (quote) { if (ch === quote && line[i - 1] !== '\\') quote = null; continue; }
+        if (ch === "'" || ch === '"') { quote = ch; continue; }
+        if (ch !== '<' || line[i + 1] !== '<') continue;
+        let j = i + 2;
+        if (line[j] === '-') j++;
+        while (/\s/.test(line[j] || '')) j++;
+        const q = line[j] === "'" || line[j] === '"' ? line[j++] : null;
+        const start = j;
+        if (q) {
+            while (j < line.length && line[j] !== q) j++;
+            if (line[j] !== q) return null;
+        } else {
+            while (/[A-Za-z0-9_.-]/.test(line[j] || '')) j++;
+        }
+        if (j === start) return null;
+        return { index: i, delimiter: line.slice(start, j), quoted: !!q };
+    }
+    return null;
+}
+
+function scanBashSegmentForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, effectiveCwd) {
+
+    const analysisCommand = command;
 
     // Find all absolute paths beginning with the repo root (the dangerous case).
     // We DON'T flag paths under the worktree; those are fine.
@@ -161,8 +319,19 @@ function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot) {
         repoRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?!\\/.claude\\/worktrees\\/)[^\\s\\\'\"]*',
         'g'
     );
-    const matches = command.match(repoPathPattern);
-    if (!matches || matches.length === 0) return null;
+    let matches = analysisCommand.match(repoPathPattern);
+    const writeVerbs = [
+        /\brm\s/, /\bmv\s/, /\bcp\s+(?:-\w+\s+)?[^\s]+\s/, /\btouch\s/, /\bmkdir\s/, /\brmdir\s/,
+        /\bsed\s+(?:-\w+\s+)?-i\b/, /\bperl\s+-pi\b/, /\btee\s/, />\s*(?!&)/, />>\s*/,
+        /\bgit\s+(?:commit|add|stage|stash|reset|checkout|restore|rebase|merge|cherry-pick|am|apply|push)\b/,
+        /\bgh\s+(?:issue|pr)\s+(?:close|reopen|comment|edit|create)\b/,
+        /\bdocker\s+exec\b/, /\bdocker\s+compose\s+up/, /\bdocker\s+compose\s+down/,
+        /\bmake\s+(?:up|down|init|airbyte-|vf-|index|migrate)/,
+    ];
+    const hasAnyWriteIntent = writeVerbs.some(rx => rx.test(analysisCommand));
+    const outsideCwd = !isInsideWorktree(effectiveCwd, worktreeRoot);
+    if ((!matches || matches.length === 0) && !(outsideCwd && hasAnyWriteIntent)) return null;
+    if (!matches || matches.length === 0) matches = [effectiveCwd];
 
     // De-dup, then drop any sanctioned coordination scripts (issue #725).
     // These are intentionally invoked across worktree boundaries (e.g.
@@ -174,16 +343,17 @@ function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot) {
     // Heuristic: if NONE of the bash verbs that are obviously write-like appear,
     // allow (e.g., `cat /Users/mz/.../foo.md` to read a file outside the worktree
     // is fine — agents legitimately need to read source-of-truth files).
-    const writeVerbs = [
-        /\brm\s/, /\bmv\s/, /\bcp\s+(?:-\w+\s+)?[^\s]+\s/, /\btouch\s/, /\bmkdir\s/, /\brmdir\s/,
-        /\bsed\s+(?:-\w+\s+)?-i\b/, /\bperl\s+-pi\b/,
-        /\btee\s/, />\s*(?!&)/, />>\s*/,
-        /\bgit\s+(?:commit|add|stage|stash|reset|checkout|restore|rebase|merge|cherry-pick|am|apply)\b/,
-        /\bgh\s+(?:issue|pr)\s+(?:close|reopen|comment|edit|create)\b/,
-        /\bdocker\s+exec\b/, /\bdocker\s+compose\s+up/, /\bdocker\s+compose\s+down/,
-        /\bmake\s+(?:up|down|init|airbyte-|vf-|index|migrate)/,
-    ];
-    const hasWriteIntent = writeVerbs.some(rx => rx.test(command));
+    const firstWord = (analysisCommand.match(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*([^\s;|&]+)/) || [])[1] || '';
+    const hasUnescapedSubstitution = /(?<!\\)\$\(/.test(analysisCommand);
+    if (/^(?:echo|printf)$/.test(firstWord) && !/[>|&;]/.test(analysisCommand) && !hasUnescapedSubstitution) {
+        return null;
+    }
+    const readOnlyCommand = /^(?:cat|echo|printf|grep|rg|ls|find|head|tail|less|git)$/u.test(firstWord) &&
+        !hasUnescapedSubstitution &&
+        !/[>]/.test(analysisCommand) &&
+        !/\s(?:-exec|-execdir|-delete)\b/.test(analysisCommand) &&
+        !/\bgit\s+(?:add|commit|reset|restore|checkout|rebase|merge|cherry-pick|am|apply|push)\b/.test(analysisCommand);
+    const hasWriteIntent = !readOnlyCommand && writeVerbs.some(rx => rx.test(analysisCommand));
     if (!hasWriteIntent) {
         dbg(`no write verbs in command — allowing read of: ${offending.join(', ')}`);
         return null;
@@ -193,6 +363,16 @@ function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot) {
         offending,
         commandSnippet: command.length > 200 ? command.slice(0, 200) + '...' : command,
     };
+}
+
+function maskSingleQuoted(command) {
+    let quote = false, out = '';
+    for (let i = 0; i < command.length; i++) {
+        const ch = command[i];
+        if (ch === "'" && command[i - 1] !== '\\') { quote = !quote; out += ' '; }
+        else out += quote ? ' ' : ch;
+    }
+    return out;
 }
 
 function main() {
@@ -242,7 +422,7 @@ function main() {
 
     if (toolName === 'Bash') {
         const command = toolInput && toolInput.command;
-        const scan = scanBashForOutOfWorktreeWrites(command, wt.repoRoot, wt.worktreeRoot);
+        const scan = scanBashForOutOfWorktreeWrites(command, wt.repoRoot, wt.worktreeRoot, cwd);
         if (!scan) return allow();
         return deny(
             `worktree-write-guard: Bash command writes to paths outside this agent's worktree.\n` +
