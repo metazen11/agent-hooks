@@ -158,6 +158,10 @@ function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, initial
     // Inspect shell segments independently. A path and a write verb elsewhere
     // in a prose/heredoc command must not combine into a false positive.
     const sanitizedCommand = stripNonExecutableHereDocs(command);
+    const pipelinePath = new RegExp(repoRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    if (/\bxargs\b/.test(sanitizedCommand) && pipelinePath.test(sanitizedCommand) && /\b(?:rm|mv|cp|touch|mkdir|tee)\b/.test(sanitizedCommand)) {
+        return { offending: [sanitizedCommand.match(pipelinePath)[0]], commandSnippet: command.slice(0, 200) };
+    }
     const segments = splitShellSegments(sanitizedCommand);
     let effectiveCwd = path.resolve(initialCwd || worktreeRoot);
     for (const segment of segments) {
@@ -335,6 +339,7 @@ function scanBashSegmentForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, 
         return null;
     }
     const readOnlyCommand = /^(?:cat|echo|printf|grep|rg|ls|find|head|tail|less|git)$/u.test(firstWord) &&
+        !hasUnescapedSubstitution &&
         !/[>]/.test(analysisCommand) &&
         !/\s(?:-exec|-execdir|-delete)\b/.test(analysisCommand) &&
         !/\bgit\s+(?:add|commit|reset|restore|checkout|rebase|merge|cherry-pick|am|apply|push)\b/.test(analysisCommand);

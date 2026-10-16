@@ -34,6 +34,8 @@ check deny $'cat <<END-DOC\nprose\nEND-DOC\nrm '$ROOT'/repo/main/out.txt'
 check deny $'cat <<\x27EOF\x27 | /bin/bash\nrm '$ROOT'/repo/main/out.txt\nEOF'
 check allow $'cat <<\x27EOF\x27\n$(rm '$ROOT'/repo/main/out.txt)\nEOF'
 check deny "echo \"don't \$(rm $ROOT/repo/main/out.txt)\""
+check deny "echo \"don't \$(rm \"$ROOT/repo/main/file\")\""
 check deny "echo \"don't \$(rm $ROOT/repo/main/out.txt) \$(printf x)\""
 check allow "printf '%s\\n' 'git push $ROOT/repo/main'"
+check deny "printf '%s\\n' '$ROOT/repo/main/file' | xargs rm -f"
 echo "3 command-parsing cases passed"
