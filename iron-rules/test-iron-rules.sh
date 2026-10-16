@@ -63,6 +63,31 @@ echo "digest parsing:"
 n=$(node $HOOK --session-start | grep -cE '^[0-9]+\. ')
 [ "$n" -ge 5 ] && ok "session-start emits $n rules" || no "expected >=5 rules, got $n"
 
+echo "canonical documentation source:"
+digest=$(awk '/^## Digest$/{on=1; next} /^## /{on=0} on && /^- /{print}' IRON-RULES.md)
+[ -n "$digest" ] && ok "Digest has a canonical source" || no "Digest source is empty"
+while IFS= read -r rule; do
+  [ -z "$rule" ] && continue
+  if grep -Fqx -- "$rule" ../README.md || grep -Fqx -- "$rule" ../HANDOFF.md; then
+    no "Digest rule is duplicated outside IRON-RULES.md: ${rule%% —*}"
+  fi
+done <<< "$digest"
+grep -Fq 'iron-rules/IRON-RULES.md' ../README.md \
+  && ok "README points to the canonical rules" \
+  || no "README does not point to the canonical rules"
+grep -Fq 'iron-rules/IRON-RULES.md' ../HANDOFF.md \
+  && ok "HANDOFF points to the canonical rules" \
+  || no "HANDOFF does not point to the canonical rules"
+grep -Fq 'does not copy the rules' ../README.md \
+  && ok "README identifies itself as integration documentation" \
+  || no "README still contains a copied rule summary"
+grep -Fq 'another copy of the rule text' ../HANDOFF.md \
+  && ok "HANDOFF identifies itself as historical documentation" \
+  || no "HANDOFF still contains a copied rule summary"
+grep -Fq 'IRON_RULES_EVERY' ../README.md && grep -Fq 'REPRIME_EVERY' ../context-primer/README.md \
+  && ok "Iron Rules and context-primer cadence owners remain documented" \
+  || no "cadence ownership documentation changed"
+
 echo "────────────────────────────────"
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

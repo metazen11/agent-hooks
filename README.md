@@ -309,12 +309,10 @@ Tests: `./lib/test-transcript.sh` (16 cases).
 
 ### iron-rules
 
-Injects non-negotiable engineering rules (root cause, TDD, DRY, simplest,
-verify, push-back) into context at session start and every Nth user turn.
-Deterministic where markdown guidance gets skipped on autopilot.
-
-Rules text lives in `iron-rules/IRON-RULES.md`, not in code — the hook parses
-its `## Digest` section, so editing the rules is a document change.
+Injects the canonical non-negotiable engineering rules from
+[`iron-rules/IRON-RULES.md`](iron-rules/IRON-RULES.md) into context at session
+start and every Nth user turn. The hook parses that file's `## Digest` section;
+this README documents the integration and cadence, but does not copy the rules.
 
 - Events: `SessionStart`, `UserPromptSubmit`
 - Cadence: `IRON_RULES_EVERY` (default 10)

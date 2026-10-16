@@ -146,7 +146,14 @@ Or manually: `cd ~/_CODING/hooks && git pull --ff-only origin main && cd contrac
 
 ## Force-push deny rules
 
-Each machine's `~/.claude/settings.json` should include hard-deny rules for force-push to `main` / `master`. Verify on a new machine:
+The active engineering rules and their canonical wording live in
+[`iron-rules/IRON-RULES.md`](iron-rules/IRON-RULES.md). The enforcement path for
+force-push protection is the installed Claude settings plus the security
+contracts; this handoff records machine-specific verification and history, not
+another copy of the rule text.
+
+Each machine's `~/.claude/settings.json` should include hard-deny rules for
+force-push to `main` / `master`. Verify on a new machine:
 
 ```bash
 grep force-with-lease ~/.claude/settings.json
