@@ -125,6 +125,7 @@ function deny(reason) {
  * accidental misuse, not an adversary (who can always use --force-anyway).
  */
 function splitSegments(cmd) {
+    cmd = stripNonExecutableHereDocs(cmd);
     const segs = [];
     let tokens = [], cur = '', has = false, quote = null;
     const endTok = () => { if (cur !== '' || has) tokens.push(cur); cur = ''; has = false; };
@@ -148,6 +149,30 @@ function splitSegments(cmd) {
     }
     endSeg();
     return segs;
+}
+
+// A quoted note passed to `cat <<EOF` is data, not a second shell program.
+// Keep executable heredocs (bash/sh/zsh/node) visible to the normal parser.
+function stripNonExecutableHereDocs(cmd) {
+    const lines = String(cmd || '').split('\n');
+    const out = [];
+    let delimiter = null;
+    for (const line of lines) {
+        if (delimiter) {
+            if (line.trim() === delimiter) delimiter = null;
+            continue;
+        }
+        const marker = line.match(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/);
+        if (marker) {
+            const before = line.slice(0, marker.index).trim();
+            const first = before.split(/\s+/)[0];
+            if (['cat', 'echo', 'printf', 'tee'].includes(first)) {
+                delimiter = marker[2];
+            }
+        }
+        out.push(line);
+    }
+    return out.join('\n');
 }
 
 /**

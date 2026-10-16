@@ -155,6 +155,58 @@ function isSanctionedPath(absPath) {
 function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot) {
     if (!command || typeof command !== 'string') return null;
 
+    // Inspect shell segments independently. A path and a write verb elsewhere
+    // in a prose/heredoc command must not combine into a false positive.
+    const segments = splitShellSegments(stripNonExecutableHereDocs(command));
+    for (const segment of segments) {
+        const result = scanBashSegmentForOutOfWorktreeWrites(segment, repoRoot, worktreeRoot);
+        if (result) return result;
+    }
+    return null;
+}
+
+function splitShellSegments(command) {
+    const segments = [];
+    let cur = '', quote = null;
+    for (let i = 0; i < command.length; i++) {
+        const ch = command[i];
+        if (quote) {
+            cur += ch;
+            if (ch === quote && command[i - 1] !== '\\') quote = null;
+        } else if (ch === "'" || ch === '"') {
+            quote = ch; cur += ch;
+        } else if (ch === ';' || ch === '\n' || ch === '&' || ch === '|') {
+            if (cur.trim()) segments.push(cur.trim());
+            cur = '';
+            if ((ch === '&' || ch === '|') && command[i + 1] === ch) i++;
+        } else cur += ch;
+    }
+    if (cur.trim()) segments.push(cur.trim());
+    return segments;
+}
+
+function stripNonExecutableHereDocs(command) {
+    const lines = String(command || '').split('\n');
+    const out = [];
+    let delimiter = null;
+    for (const line of lines) {
+        if (delimiter) {
+            if (line.trim() === delimiter) delimiter = null;
+            continue;
+        }
+        const marker = line.match(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/);
+        if (marker) {
+            const before = line.slice(0, marker.index).trim();
+            const first = before.split(/\s+/)[0];
+            if (['cat', 'echo', 'printf', 'tee'].includes(first)) delimiter = marker[2];
+        }
+        out.push(line);
+    }
+    return out.join('\n');
+}
+
+function scanBashSegmentForOutOfWorktreeWrites(command, repoRoot, worktreeRoot) {
+
     // Find all absolute paths beginning with the repo root (the dangerous case).
     // We DON'T flag paths under the worktree; those are fine.
     const repoPathPattern = new RegExp(
@@ -183,7 +235,11 @@ function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot) {
         /\bdocker\s+exec\b/, /\bdocker\s+compose\s+up/, /\bdocker\s+compose\s+down/,
         /\bmake\s+(?:up|down|init|airbyte-|vf-|index|migrate)/,
     ];
-    const hasWriteIntent = writeVerbs.some(rx => rx.test(command));
+    const firstWord = (command.match(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*([^\s;|&]+)/) || [])[1] || '';
+    const readOnlyCommand = /^(?:cat|grep|rg|ls|find|head|tail|less|git)$/u.test(firstWord) &&
+        !/\s(?:>|>>|tee\s|rm\s|mv\s|cp\s)/.test(command) &&
+        !/\bgit\s+(?:add|commit|reset|restore|checkout|rebase|merge|cherry-pick|am|apply|push)\b/.test(command);
+    const hasWriteIntent = !readOnlyCommand && writeVerbs.some(rx => rx.test(command));
     if (!hasWriteIntent) {
         dbg(`no write verbs in command — allowing read of: ${offending.join(', ')}`);
         return null;
