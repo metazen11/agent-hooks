@@ -12,6 +12,8 @@ git -C "$ROOT" branch dev
 payload() { node -e 'process.stdout.write(JSON.stringify({tool_name:"Bash",tool_input:{command:process.argv[1]},cwd:process.argv[2]}))' "$1" "$ROOT"; }
 allow() { payload "$1" | node "$HOOK" | grep -q '"allow"'; }
 deny() { payload "$1" | node "$HOOK" | grep -q '"deny"'; }
-allow $'cat <<'"'"'EOF'"'"'\ngit push origin main\nEOF'
-deny $'bash <<'"'"'EOF'"'"'\ngit push origin main\nEOF'
+cat_script=$(printf 'cat <<\x27EOF\x27\ngit push origin main\nEOF')
+bash_script=$(printf 'bash <<\x27EOF\x27\ngit push origin main\nEOF')
+allow "$cat_script"
+deny "$bash_script"
 echo "heredoc parsing cases passed"
