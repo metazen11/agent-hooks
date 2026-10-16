@@ -330,7 +330,8 @@ function scanBashSegmentForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, 
     // allow (e.g., `cat /Users/mz/.../foo.md` to read a file outside the worktree
     // is fine — agents legitimately need to read source-of-truth files).
     const firstWord = (analysisCommand.match(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*([^\s;|&]+)/) || [])[1] || '';
-    if (/^(?:echo|printf)$/.test(firstWord) && !/[>]/.test(analysisCommand)) {
+    const hasUnescapedSubstitution = /(?<!\\)\$\(/.test(analysisCommand);
+    if (/^(?:echo|printf)$/.test(firstWord) && !/[>|&;]/.test(analysisCommand) && !hasUnescapedSubstitution) {
         return null;
     }
     const readOnlyCommand = /^(?:cat|echo|printf|grep|rg|ls|find|head|tail|less|git)$/u.test(firstWord) &&
