@@ -20,4 +20,6 @@ allow "echo '\$(git push origin main)'"
 deny 'echo "\$(git push origin main)"'
 deny $'cat <<\x27EOF\x27 | bash\ngit push origin main\nEOF'
 deny $'cat <<\x27EOF\x27\nprose mentions git push origin main\nEOF\ngit push origin main'
+deny $'echo "fake <<EOF"\ngit push origin main'
+deny $'cat <<EOF\n$(git push origin main)\nEOF'
 echo "heredoc parsing cases passed"

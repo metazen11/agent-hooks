@@ -25,4 +25,6 @@ check deny "cat local.txt >$ROOT/repo/main/out.txt"
 check deny "find $ROOT/repo/main -exec touch {} \\;"
 check deny "echo \"\$(rm $ROOT/repo/main/out.txt)\""
 check allow "echo '\$(rm $ROOT/repo/main/out.txt)'"
+check deny $'echo "fake <<EOF"\nrm '$ROOT'/repo/main/out.txt'
+check deny $'cat <<EOF\n$(rm '$ROOT'/repo/main/out.txt)\nEOF'
 echo "3 command-parsing cases passed"
