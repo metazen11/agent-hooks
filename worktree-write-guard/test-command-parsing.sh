@@ -20,6 +20,7 @@ check allow "cat $ROOT/repo/main/note.md"
 check allow $'cat > note.md <<\x27EOF\x27\nThis note mentions '$ROOT'/repo/main and git push origin main.\nEOF'
 check deny "echo data > $ROOT/repo/main/out.txt"
 check deny "cd $ROOT/repo/main && rm file"
+check deny "(cd $ROOT/repo/main && rm file)"
 check deny "cat local.txt >$ROOT/repo/main/out.txt"
 check deny "find $ROOT/repo/main -exec touch {} \\;"
 check deny "echo \"\$(rm $ROOT/repo/main/out.txt)\""

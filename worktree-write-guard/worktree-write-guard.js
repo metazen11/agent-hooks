@@ -173,7 +173,7 @@ function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, initial
 }
 
 function parseCdTarget(command, cwd) {
-    const m = command.match(/^\s*cd\s+(?:--\s+)?([^\s;|&]+)/);
+    const m = command.match(/^\s*\(*\s*cd\s+(?:--\s+)?([^\s;|&]+)/);
     return m ? path.resolve(cwd, m[1].replace(/^['"]|['"]$/g, '')) : null;
 }
 
