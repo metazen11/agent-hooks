@@ -22,9 +22,15 @@ check deny "echo data > $ROOT/repo/main/out.txt"
 check deny "cd $ROOT/repo/main && rm file"
 check deny "(cd $ROOT/repo/main && rm file)"
 check deny "cat local.txt >$ROOT/repo/main/out.txt"
+check deny "rm '$ROOT/repo/main/file'"
+check deny "echo data > '$ROOT/repo/main/out.txt'"
+check deny "cd . > $ROOT/repo/main/out.txt"
 check deny "find $ROOT/repo/main -exec touch {} \\;"
-check deny "echo \"\$(rm $ROOT/repo/main/out.txt)\""
-check allow "echo '\$(rm $ROOT/repo/main/out.txt)'"
+check deny 'echo "$(rm '"$ROOT"'/repo/main/out.txt)"'
+check allow 'echo "\$(rm '"$ROOT"'/repo/main/out.txt)"'
 check deny $'echo "fake <<EOF"\nrm '$ROOT'/repo/main/out.txt'
 check deny $'cat <<EOF\n$(rm '$ROOT'/repo/main/out.txt)\nEOF'
+check deny $'cat <<END-DOC\nprose\nEND-DOC\nrm '$ROOT'/repo/main/out.txt'
+check deny $'cat <<\x27EOF\x27 | /bin/bash\nrm '$ROOT'/repo/main/out.txt\nEOF'
+check allow $'cat <<\x27EOF\x27\n$(rm '$ROOT'/repo/main/out.txt)\nEOF'
 echo "3 command-parsing cases passed"

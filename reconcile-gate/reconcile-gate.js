@@ -169,7 +169,7 @@ function commandSubstitutions(cmd) {
             if (end !== -1) { bodies.push(cmd.slice(i + 1, end)); i = end; }
             continue;
         }
-        if (cmd.startsWith('$(', i)) {
+        if (cmd.startsWith('$(', i) && cmd[i - 1] !== '\\') {
             let depth = 1, end = i + 2, innerQuote = null;
             for (; end < cmd.length && depth; end++) {
                 const c = cmd[end];
@@ -201,7 +201,7 @@ function stripNonExecutableHereDocs(cmd) {
         if (marker) {
             const before = line.slice(0, marker.index).trim();
             const first = before.split(/\s+/)[0];
-            const executablePipeline = /\|\s*(?:env\s+)?(?:bash|sh|zsh|node)\b/.test(line);
+            const executablePipeline = /\|\s*(?:env\s+)?(?:[\w.-]+\/|\/[^\s|;&]+\/|\/)?(?:bash|sh|zsh|node)\b/.test(line);
             if (['cat', 'echo', 'printf', 'tee'].includes(first) && !executablePipeline) {
                 delimiter = marker.delimiter;
                 delimiterQuoted = marker.quoted;
@@ -224,7 +224,7 @@ function hereDocMarker(line) {
         while (/\s/.test(line[j] || '')) j++;
         const q = line[j] === "'" || line[j] === '"' ? line[j++] : null;
         const start = j;
-        while (/[A-Za-z0-9_]/.test(line[j] || '')) j++;
+        while (/[A-Za-z0-9_.-]/.test(line[j] || '')) j++;
         if (j === start) return null;
         return { index: i, delimiter: line.slice(start, j), quoted: !!q };
     }

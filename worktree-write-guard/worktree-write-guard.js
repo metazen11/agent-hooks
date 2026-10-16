@@ -157,7 +157,8 @@ function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, initial
 
     // Inspect shell segments independently. A path and a write verb elsewhere
     // in a prose/heredoc command must not combine into a false positive.
-    const segments = splitShellSegments(stripNonExecutableHereDocs(command));
+    const sanitizedCommand = stripNonExecutableHereDocs(command);
+    const segments = splitShellSegments(sanitizedCommand);
     let effectiveCwd = path.resolve(initialCwd || worktreeRoot);
     for (const segment of segments) {
         const cdTarget = parseCdTarget(segment, effectiveCwd);
@@ -165,7 +166,7 @@ function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, initial
         const result = scanBashSegmentForOutOfWorktreeWrites(segment, repoRoot, worktreeRoot, effectiveCwd);
         if (result) return result;
     }
-    for (const body of commandSubstitutions(command)) {
+    for (const body of commandSubstitutions(sanitizedCommand)) {
         const result = scanBashForOutOfWorktreeWrites(body, repoRoot, worktreeRoot, effectiveCwd);
         if (result) return result;
     }
@@ -173,6 +174,7 @@ function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, initial
 }
 
 function parseCdTarget(command, cwd) {
+    if (/[>&|;]/.test(command)) return null;
     const m = command.match(/^\s*\(*\s*cd\s+(?:--\s+)?([^\s;|&]+)/);
     return m ? path.resolve(cwd, m[1].replace(/^['"]|['"]$/g, '')) : null;
 }
@@ -192,7 +194,7 @@ function commandSubstitutions(command) {
             if (end !== -1) { bodies.push(command.slice(i + 1, end)); i = end; }
             continue;
         }
-        if (command.startsWith('$(', i)) {
+        if (command.startsWith('$(', i) && command[i - 1] !== '\\') {
             let depth = 1, end = i + 2, innerQuote = null;
             for (; end < command.length && depth; end++) {
                 const c = command[end];
@@ -242,7 +244,7 @@ function stripNonExecutableHereDocs(command) {
         if (marker) {
             const before = line.slice(0, marker.index).trim();
             const first = before.split(/\s+/)[0];
-            const executablePipeline = /\|\s*(?:env\s+)?(?:bash|sh|zsh|node)\b/.test(line);
+            const executablePipeline = /\|\s*(?:env\s+)?(?:[\w.-]+\/|\/[^\s|;&]+\/|\/)?(?:bash|sh|zsh|node)\b/.test(line);
             if (['cat', 'echo', 'printf', 'tee'].includes(first) && !executablePipeline) {
                 delimiter = marker.delimiter;
                 delimiterQuoted = marker.quoted;
@@ -265,7 +267,7 @@ function hereDocMarker(line) {
         while (/\s/.test(line[j] || '')) j++;
         const q = line[j] === "'" || line[j] === '"' ? line[j++] : null;
         const start = j;
-        while (/[A-Za-z0-9_]/.test(line[j] || '')) j++;
+        while (/[A-Za-z0-9_.-]/.test(line[j] || '')) j++;
         if (j === start) return null;
         return { index: i, delimiter: line.slice(start, j), quoted: !!q };
     }
@@ -274,7 +276,7 @@ function hereDocMarker(line) {
 
 function scanBashSegmentForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, effectiveCwd) {
 
-    const analysisCommand = maskSingleQuoted(command);
+    const analysisCommand = command;
 
     // Find all absolute paths beginning with the repo root (the dangerous case).
     // We DON'T flag paths under the worktree; those are fine.
@@ -307,7 +309,7 @@ function scanBashSegmentForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, 
     // allow (e.g., `cat /Users/mz/.../foo.md` to read a file outside the worktree
     // is fine — agents legitimately need to read source-of-truth files).
     const firstWord = (analysisCommand.match(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*([^\s;|&]+)/) || [])[1] || '';
-    const readOnlyCommand = /^(?:cat|grep|rg|ls|find|head|tail|less|git)$/u.test(firstWord) &&
+    const readOnlyCommand = /^(?:cat|echo|printf|grep|rg|ls|find|head|tail|less|git)$/u.test(firstWord) &&
         !/[>]/.test(analysisCommand) &&
         !/\s(?:-exec|-execdir|-delete)\b/.test(analysisCommand) &&
         !/\bgit\s+(?:add|commit|reset|restore|checkout|rebase|merge|cherry-pick|am|apply|push)\b/.test(analysisCommand);
