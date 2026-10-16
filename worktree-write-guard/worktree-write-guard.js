@@ -158,9 +158,10 @@ function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, initial
     // Inspect shell segments independently. A path and a write verb elsewhere
     // in a prose/heredoc command must not combine into a false positive.
     const sanitizedCommand = stripNonExecutableHereDocs(command);
-    const pipelinePath = new RegExp(repoRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-    if (/\bxargs\b/.test(sanitizedCommand) && pipelinePath.test(sanitizedCommand) && /\b(?:rm|mv|cp|touch|mkdir|tee)\b/.test(sanitizedCommand)) {
-        return { offending: [sanitizedCommand.match(pipelinePath)[0]], commandSnippet: command.slice(0, 200) };
+    const repoPaths = extractRepoPaths(sanitizedCommand, repoRoot);
+    const outsideRepoPaths = repoPaths.filter(candidate => !isInsideWorktree(candidate, worktreeRoot));
+    if (/\bxargs\b/.test(sanitizedCommand) && outsideRepoPaths.length > 0 && /\b(?:rm|mv|cp|touch|mkdir|tee)\b/.test(sanitizedCommand)) {
+        return { offending: outsideRepoPaths, commandSnippet: command.slice(0, 200) };
     }
     const segments = splitShellSegments(sanitizedCommand);
     let effectiveCwd = path.resolve(initialCwd || worktreeRoot);
@@ -183,6 +184,15 @@ function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, initial
         if (result) return result;
     }
     return null;
+}
+
+// Return only canonical paths rooted at repoRoot. The separator boundary is
+// important: /repo-sibling must not be treated as /repo, and paths under the
+// current agent worktree are allowed by the same boundary check used below.
+function extractRepoPaths(command, repoRoot) {
+    const escapedRoot = repoRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`${escapedRoot}(?=\\/|\\s|['"|;&]|$)[^\\s\\'"|;&]*`, 'g');
+    return Array.from(new Set(command.match(pattern) || []));
 }
 
 function parseCdTarget(command, cwd) {
