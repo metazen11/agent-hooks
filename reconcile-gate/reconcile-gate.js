@@ -148,7 +148,40 @@ function splitSegments(cmd) {
         }
     }
     endSeg();
+    for (const body of commandSubstitutions(cmd)) {
+        segs.push(...splitSegments(body));
+    }
     return segs;
+}
+
+function commandSubstitutions(cmd) {
+    const bodies = [];
+    let quote = null;
+    for (let i = 0; i < cmd.length; i++) {
+        const ch = cmd[i];
+        if (quote) {
+            if (ch === quote && cmd[i - 1] !== '\\') quote = null;
+            continue;
+        }
+        if (ch === "'") { quote = ch; continue; }
+        if (ch === '`') {
+            const end = cmd.indexOf('`', i + 1);
+            if (end !== -1) { bodies.push(cmd.slice(i + 1, end)); i = end; }
+            continue;
+        }
+        if (cmd.startsWith('$(', i)) {
+            let depth = 1, end = i + 2, innerQuote = null;
+            for (; end < cmd.length && depth; end++) {
+                const c = cmd[end];
+                if (innerQuote) { if (c === innerQuote && cmd[end - 1] !== '\\') innerQuote = null; continue; }
+                if (c === "'" || c === '"') { innerQuote = c; continue; }
+                if (c === '(') depth++;
+                else if (c === ')') depth--;
+            }
+            if (!depth) { bodies.push(cmd.slice(i + 2, end - 1)); i = end - 1; }
+        }
+    }
+    return bodies;
 }
 
 // A quoted note passed to `cat <<EOF` is data, not a second shell program.
@@ -166,7 +199,8 @@ function stripNonExecutableHereDocs(cmd) {
         if (marker) {
             const before = line.slice(0, marker.index).trim();
             const first = before.split(/\s+/)[0];
-            if (['cat', 'echo', 'printf', 'tee'].includes(first)) {
+            const executablePipeline = /\|\s*(?:env\s+)?(?:bash|sh|zsh|node)\b/.test(line);
+            if (['cat', 'echo', 'printf', 'tee'].includes(first) && !executablePipeline) {
                 delimiter = marker[2];
             }
         }

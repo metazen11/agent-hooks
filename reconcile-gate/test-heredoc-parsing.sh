@@ -16,4 +16,8 @@ cat_script=$(printf 'cat <<\x27EOF\x27\ngit push origin main\nEOF')
 bash_script=$(printf 'bash <<\x27EOF\x27\ngit push origin main\nEOF')
 allow "$cat_script"
 deny "$bash_script"
+allow "echo '\$(git push origin main)'"
+deny 'echo "\$(git push origin main)"'
+deny $'cat <<\x27EOF\x27 | bash\ngit push origin main\nEOF'
+deny $'cat <<\x27EOF\x27\nprose mentions git push origin main\nEOF\ngit push origin main'
 echo "heredoc parsing cases passed"
