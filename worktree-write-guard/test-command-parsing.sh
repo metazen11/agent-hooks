@@ -8,7 +8,11 @@ check() {
   local expected="$1"; shift
   local result
   result=$(printf '%s\n' "$1" | node "$HOOK")
-  [[ "$result" == *"\"$expected\""* ]]
+  if [[ "$expected" == allow ]]; then
+    [[ -z "$result" || "$result" == *'"allow"'* ]]
+  else
+    [[ "$result" == *'"deny"'* ]]
+  fi
 }
 read_payload="{\"cwd\":\"$ROOT/repo/.claude/worktrees/agent-1\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat $ROOT/repo/main/note.md\"}}"
 check allow "$read_payload"
