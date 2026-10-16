@@ -23,6 +23,7 @@ deny $'cat <<\x27EOF\x27 | /bin/bash\ngit push origin main\nEOF'
 deny $'cat <<\x27EOF\x27\nprose mentions git push origin main\nEOF\ngit push origin main'
 deny $'echo "fake <<EOF"\ngit push origin main'
 deny $'cat <<EOF\n$(git push origin main)\nEOF'
+deny $'cat <<EOF\nprose $(git push origin main) and $(printf x)\nEOF'
 deny $'cat <<END-DOC\nprose\nEND-DOC\ngit push origin main'
 deny $'cat <<\x27END DOC\x27\nprose\nEND DOC\ngit push origin main'
 echo "heredoc parsing cases passed"

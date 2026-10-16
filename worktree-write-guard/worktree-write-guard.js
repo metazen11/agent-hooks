@@ -169,8 +169,10 @@ function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, initial
     const nestedBodies = commandSubstitutions(sanitizedCommand);
     // commandSubstitutions intentionally ignores apostrophes inside a double
     // quoted string; add substitutions found in that shell-valid context.
-    for (const match of sanitizedCommand.matchAll(/"[^"\n]*(?<!\\)\$\(([^()\n]*)\)[^"\n]*"/g)) {
-        nestedBodies.push(match[1]);
+    for (const quoted of sanitizedCommand.matchAll(/"([^"\n]*)"/g)) {
+        for (const match of quoted[1].matchAll(/(?<!\\)\$\(([^()\n]*)\)/g)) {
+            nestedBodies.push(match[1]);
+        }
     }
     for (const body of nestedBodies) {
         const result = scanBashForOutOfWorktreeWrites(body, repoRoot, worktreeRoot, effectiveCwd);
@@ -251,7 +253,7 @@ function stripNonExecutableHereDocs(command) {
     for (const line of lines) {
         if (delimiter) {
             if (line.trim() === delimiter) { delimiter = null; delimiterQuoted = false; }
-            else if (!delimiterQuoted) out.push(...commandSubstitutions(line));
+            else if (!delimiterQuoted) out.push(line);
             continue;
         }
         const marker = hereDocMarker(line);
@@ -328,6 +330,9 @@ function scanBashSegmentForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, 
     // allow (e.g., `cat /Users/mz/.../foo.md` to read a file outside the worktree
     // is fine — agents legitimately need to read source-of-truth files).
     const firstWord = (analysisCommand.match(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*([^\s;|&]+)/) || [])[1] || '';
+    if (/^(?:echo|printf)$/.test(firstWord) && !/[>]/.test(analysisCommand)) {
+        return null;
+    }
     const readOnlyCommand = /^(?:cat|echo|printf|grep|rg|ls|find|head|tail|less|git)$/u.test(firstWord) &&
         !/[>]/.test(analysisCommand) &&
         !/\s(?:-exec|-execdir|-delete)\b/.test(analysisCommand) &&

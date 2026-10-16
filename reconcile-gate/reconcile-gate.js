@@ -194,7 +194,7 @@ function stripNonExecutableHereDocs(cmd) {
     for (const line of lines) {
         if (delimiter) {
             if (line.trim() === delimiter) { delimiter = null; delimiterQuoted = false; }
-            else if (!delimiterQuoted) out.push(...commandSubstitutions(line));
+            else if (!delimiterQuoted) out.push(line);
             continue;
         }
         const marker = hereDocMarker(line);
