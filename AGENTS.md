@@ -1,4 +1,15 @@
 
+## Agent coordination
+
+Use the shared [Agent coordination issue #31](https://github.com/metazen11/agent-hooks/issues/31)
+for ownership proposals, handoffs, blockers, and exact-head evidence. Check the
+latest comments and linked task before claiming work; use one isolated worktree per
+overlapping task and require explicit owner and receiver acknowledgment. Record the
+exact SHA, branch/worktree, affected files, state, evidence, remaining work, and
+blockers. Issue comments are coordination records, not atomic locks or approval
+overrides. Preserve this repository's hook and contract rules; coordination does
+not authorize security/config changes or bypass validation.
+
 <!-- contracts-start -->
 ## Engineering Contract
 

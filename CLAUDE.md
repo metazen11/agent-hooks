@@ -5,3 +5,8 @@
 
 *No recent activity*
 </claude-mem-context>
+
+Use the shared [Agent coordination issue #31](https://github.com/metazen11/agent-hooks/issues/31)
+for ownership proposals, handoffs, blockers, and exact-head evidence. Check it before
+claiming overlapping work, use an isolated worktree, and require explicit owner and
+receiver acknowledgment. This pointer does not override the engineering contract.
