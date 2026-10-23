@@ -4,6 +4,7 @@
 // ─────────────────────────────────────────────────────────────
 //
 //  Usage:  node env-write.js <file> <KEY> <VALUE>
+//          printf %s "$SECRET" | node env-write.js <file> <KEY> -   (preferred for secrets)
 //
 //  - If KEY exists  → replaces that line
 //  - If KEY is new  → appends it
@@ -16,8 +17,11 @@ const path = require('path');
 
 // ── Parse args ───────────────────────────────────────────────
 
+// VALUE "-" reads the value from stdin, so a secret never sits in argv (visible in `ps`).
 const [,, filePath, key, ...valueParts] = process.argv;
-const value = valueParts.join(' ');
+const value = valueParts.length === 1 && valueParts[0] === '-'
+  ? fs.readFileSync(0, 'utf8').replace(/\r?\n$/, '')
+  : valueParts.join(' ');
 
 if (!filePath || !key) {
   console.error('Usage: node env-write.js <file> <KEY> <VALUE>');
