@@ -9,14 +9,13 @@
  *
  * USAGE:
  *   node git-session.js --session-start   # Initialize git, create working branch
- *   node git-session.js --session-end     # Commit and push changes
+ *   node git-session.js --session-end     # Commit changes locally (never pushes)
  *   node git-session.js --pre-edit        # Checkpoint before Edit/Write tools
  *   node git-session.js --help            # Show help
  *
  * CONFIGURATION (environment variables):
  *   GIT_HOOK_PROTECTED_BRANCHES=main,master,dev,develop  # Auto-branch from these
  *   GIT_HOOK_BRANCH_PREFIX=claude                        # Prefix for auto-branches
- *   GIT_HOOK_AUTO_PUSH=true                              # Push on session end
  *   GIT_HOOK_AUTO_PULL=true                              # Pull on session start
  *   GIT_HOOK_CHECKPOINT=true                             # Checkpoint before edits
  *   GIT_HOOK_VERBOSE=true                                # Debug logging
@@ -71,13 +70,16 @@ function isAtOrAboveHome(absPath) {
 const CONFIG = {
     protectedBranches: (process.env.GIT_HOOK_PROTECTED_BRANCHES || 'main,master,dev,develop,staging').split(','),
     branchPrefix: process.env.GIT_HOOK_BRANCH_PREFIX || 'work',
-    autoPush: process.env.GIT_HOOK_AUTO_PUSH !== 'false',
     autoPull: process.env.GIT_HOOK_AUTO_PULL !== 'false',
     checkpoint: process.env.GIT_HOOK_CHECKPOINT !== 'false',
     verbose: process.env.GIT_HOOK_VERBOSE === 'true'
 };
 
 // Track checkpoints to avoid excessive commits
+// Agent runtime state, never checkpointed (agent-memory #197). Top-anchored
+// so it works from any subdirectory; used by hasChanges() and snapshot().
+const RUNTIME_PATHSPEC = ":/ ':(top,exclude).agent-memory-codex' ':(top,exclude).anvil'";
+
 const CHECKPOINT_COOLDOWN_MS = 30000; // 30 seconds between checkpoints
 let lastCheckpointTime = 0;
 
@@ -118,6 +120,8 @@ function git(args, cwd, options = {}) {
             cwd,
             encoding: 'utf8',
             stdio: options.stdio || ['pipe', 'pipe', 'pipe'],
+            input: options.input,
+            env: options.env ? { ...process.env, ...options.env } : undefined,
             timeout: 10000 // 10 second timeout
         });
         return { success: true, output: result.trim() };
@@ -152,8 +156,43 @@ function getCurrentBranch(dir) {
 }
 
 function hasChanges(dir) {
-    const status = git('status --porcelain', dir);
+    const status = git(`status --porcelain -- ${RUNTIME_PATHSPEC}`, dir);
     return status.success && status.output.length > 0;
+}
+
+// A branch that exists on origin may be a PR head (possibly already audited).
+// ponytail: "published" stands in for "has an open PR" (local, no gh call,
+// errs toward the side ref); query gh only if side refs ever get in the way.
+function isPublished(dir, branch) {
+    return git('rev-parse --verify -q @{upstream}', dir).success
+        || git(`rev-parse --verify -q refs/remotes/origin/${branch}`, dir).success;
+}
+
+/**
+ * The ONLY place git-session records work. Hooks never push (#33).
+ *   - unpublished branch: a normal local commit on the branch.
+ *   - published branch:   the branch and index are left untouched; the tree is
+ *     snapshotted to refs/checkpoints/<branch> (reflog keeps the history).
+ * Runtime dirs (RUNTIME_PATHSPEC) are excluded either way.
+ */
+function snapshot(dir, branch, message) {
+    if (!isPublished(dir, branch)) {
+        git(`add -A -- ${RUNTIME_PATHSPEC}`, dir);
+        return git('commit -F -', dir, { input: message });
+    }
+    const gitPath = (p) => path.resolve(dir, git(`rev-parse --git-path ${p}`, dir).output);
+    const tmpIndex = gitPath(`checkpoint-index-${process.pid}`);
+    try {
+        try { fs.copyFileSync(gitPath('index'), tmpIndex); } catch (e) { /* fresh repo: empty index */ }
+        const env = { GIT_INDEX_FILE: tmpIndex };
+        const add = git(`add -A -- ${RUNTIME_PATHSPEC}`, dir, { env });
+        const tree = add.success && git('write-tree', dir, { env });
+        const commit = tree && tree.success && git(`commit-tree ${tree.output} -p HEAD -F -`, dir, { input: message });
+        if (!commit || !commit.success) return { success: false, output: 'side-ref snapshot failed' };
+        return git(`update-ref --create-reflog -m checkpoint refs/checkpoints/${branch} ${commit.output}`, dir);
+    } finally {
+        try { fs.unlinkSync(tmpIndex); } catch (e) { /* best-effort */ }
+    }
 }
 
 function hasStagedChanges(dir) {
@@ -240,7 +279,7 @@ function generateBranchName(sessionId, cwd) {
 }
 
 function formatChangeSummary(dir) {
-    const status = git('status --porcelain', dir);
+    const status = git(`status --porcelain -- ${RUNTIME_PATHSPEC}`, dir);
     if (!status.success) return 'Changes';
 
     const lines = status.output.split('\n').filter(Boolean);
@@ -732,10 +771,9 @@ function handleSessionEnd(hookInput) {
             };
         }
 
-        git('add -A', cwd);
         const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
         const commitMsg = `Claude session end: ${changeSummary}\n\nAuto-committed at ${timestamp}`;
-        const commitResult = git(`commit -m "${commitMsg.replace(/"/g, '\\"')}"`, cwd);
+        const commitResult = snapshot(cwd, currentBranch, commitMsg);
         if (!commitResult.success) {
             log(`Final commit failed: ${commitResult.output}`);
             // Don't squash if we couldn't commit — state is suspect.
@@ -770,17 +808,7 @@ function handleSessionEnd(hookInput) {
         }
     }
 
-    // 3) Push if configured and safe.
-    if (CONFIG.autoPush && hasRemote(cwd) && !CONFIG.protectedBranches.includes(currentBranch)) {
-        log(`Pushing to origin/${currentBranch}`);
-        // After a squash, history was rewritten. Use --force-with-lease so we
-        // never clobber someone else's work, but allow our own rewrite to land.
-        const pushResult = git(`push --force-with-lease -u origin ${currentBranch}`, cwd);
-        if (!pushResult.success) {
-            log(`Push failed: ${pushResult.output}`);
-            messages.push(`Push failed (likely needs manual review): ${pushResult.output.split('\n')[0]}`);
-        }
-    }
+    // No push, ever (#33): pushing is the agent's explicit `git push`.
 
     if (messages.length > 0) {
         console.error(`[git-session] ${messages.join(' | ')}`);
@@ -917,13 +945,10 @@ function handlePreEdit(hookInput) {
     const targetFile = toolInput.file_path;
     const shortFile = targetFile ? path.basename(targetFile) : 'files';
 
-    // Create checkpoint commit
-    git('add -A', cwd);
-
     const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
     const commitMsg = `Checkpoint before editing ${shortFile}\n\nAuto-checkpoint at ${timestamp}`;
 
-    const commitResult = git(`commit -m "${commitMsg.replace(/"/g, '\\"')}"`, cwd);
+    const commitResult = snapshot(cwd, getCurrentBranch(cwd), commitMsg);
     if (commitResult.success) {
         lastCheckpointTime = now;
         log(`Checkpoint created before editing ${shortFile}`);
@@ -947,14 +972,13 @@ USAGE:
 
 COMMANDS:
   --session-start    Initialize git, create working branch if on main/dev
-  --session-end      Commit and push all changes
+  --session-end      Commit all changes locally (never pushes)
   --pre-edit         Create checkpoint commit before destructive operations
   --help             Show this help
 
 ENVIRONMENT VARIABLES:
   GIT_HOOK_PROTECTED_BRANCHES  Branches to auto-branch from (default: main,master,dev,develop)
   GIT_HOOK_BRANCH_PREFIX       Auto-branch prefix (default: claude)
-  GIT_HOOK_AUTO_PUSH           Push on session end (default: true)
   GIT_HOOK_AUTO_PULL           Pull on session start (default: true)
   GIT_HOOK_CHECKPOINT          Checkpoint before edits (default: true)
   GIT_HOOK_VERBOSE             Debug logging (default: false)
@@ -967,7 +991,7 @@ BEHAVIOR:
 
   Session End:
     - Commit all changes with summary
-    - Push to remote (unless on protected branch)
+    - Never pushes; on a published branch (PR head) snapshots to refs/checkpoints/<branch> instead
 
   Pre-Edit:
     - Create checkpoint commit before destructive operations

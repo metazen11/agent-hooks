@@ -1,6 +1,12 @@
 # Session Handoff
 
-**Last updated:** 2026-10-14
+**Last updated:** 2026-10-25
+
+## 2026-10-25 - git-session never pushes (#33)
+
+- Root cause of unrequested pushes: `git-session.js --session-end` pushed the current branch to origin on every SessionEnd (auto-push on by default). Removed along with `GIT_HOOK_AUTO_PUSH`. Hooks never push.
+- On a branch that exists on origin (possible PR head), session-end and pre-edit snapshots go to `refs/checkpoints/<branch>` (with reflog); branch, index and tree are untouched. `.agent-memory-codex/` and `.anvil/` are never checkpointed. Commit messages go via stdin (no shell interpolation of file names).
+- Live installs (`~/.claude/hooks`, `~/.codex/hooks`) are symlinks to the MAIN checkout `~/_CODING/hooks`, so the fix is live only when that checkout has `main` (post-merge) checked out. Test: `git-session/test-no-push.sh`.
 
 ## 2026-10-14 - single-trunk default (#23)
 
