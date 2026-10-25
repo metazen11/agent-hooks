@@ -165,7 +165,7 @@ function hasChanges(dir) {
 // errs toward the side ref); query gh only if side refs ever get in the way.
 function isPublished(dir, branch) {
     return git('rev-parse --verify -q @{upstream}', dir).success
-        || git(`rev-parse --verify -q refs/remotes/origin/${branch}`, dir).success;
+        || git('rev-parse --verify -q "refs/remotes/origin/$GS_BRANCH"', dir, { env: { GS_BRANCH: branch } }).success;
 }
 
 /**
@@ -173,6 +173,8 @@ function isPublished(dir, branch) {
  *   - unpublished branch: a normal local commit on the branch.
  *   - published branch:   the branch and index are left untouched; the tree is
  *     snapshotted to refs/checkpoints/<branch> (reflog keeps the history).
+ * The side ref holds the whole working tree (like `git stash create`); the
+ * real index keeps the user's staged/unstaged split.
  * Runtime dirs (RUNTIME_PATHSPEC) are excluded either way.
  */
 function snapshot(dir, branch, message) {
@@ -189,7 +191,9 @@ function snapshot(dir, branch, message) {
         const tree = add.success && git('write-tree', dir, { env });
         const commit = tree && tree.success && git(`commit-tree ${tree.output} -p HEAD -F -`, dir, { input: message });
         if (!commit || !commit.success) return { success: false, output: 'side-ref snapshot failed' };
-        return git(`update-ref --create-reflog -m checkpoint refs/checkpoints/${branch} ${commit.output}`, dir);
+        // Branch via env, quoted in the shell: never interpolated as shell text.
+        return git(`update-ref --create-reflog -m checkpoint "refs/checkpoints/$GS_BRANCH" ${commit.output}`, dir,
+            { env: { GS_BRANCH: branch } });
     } finally {
         try { fs.unlinkSync(tmpIndex); } catch (e) { /* best-effort */ }
     }

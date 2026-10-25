@@ -65,9 +65,11 @@ rm -rf "$d"
 
 echo "Case 3: pre-edit checkpoint on a published branch goes to the side ref"
 d="$(setup publish)"; h="$(head_sha "$d")"
+echo staged >"$d/w/s.txt"; git -C "$d/w" add s.txt
 echo dirty >"$d/w/file.txt"
 hook "$d" --pre-edit
 check "branch head not moved" test "$h" == "$(head_sha "$d")"
+check "user's index untouched (only s.txt staged)" test "$(git -C "$d/w" diff --cached --name-only)" == s.txt
 check "snapshot on refs/checkpoints/$BR" \
     test "$(git -C "$d/w" show "refs/checkpoints/$BR:file.txt" 2>/dev/null)" == dirty
 rm -rf "$d"
