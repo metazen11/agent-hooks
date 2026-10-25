@@ -87,6 +87,46 @@ check "runtime paths not in commit" \
     test -z "$(git -C "$d/w" ls-tree -r --name-only HEAD | grep -E '^\.(agent-memory-codex|anvil)/' || true)"
 rm -rf "$d"
 
+echo "Case 5: shell metacharacters in a branch name are never executed"
+# 'x$(touch PWNED)' (with a space) is rejected by check-ref-format; this is
+# the space-free form git accepts as a real branch name.
+EVIL='x$(touch${IFS}PWNED)'
+for pub in "" publish; do
+    d="$(setup $pub)"
+    git -C "$d/w" branch -m "$BR" "$EVIL"
+    [[ -n "$pub" ]] && git -C "$d/w" push -q -u origin "$EVIL"
+    printf '{"cwd":"%s","hook_event_name":"SessionStart"}' "$d/w" \
+        | (cd "$d/w" && node "$HOOK" --session-start >/dev/null 2>&1) || true
+    echo dirty >"$d/w/file.txt"
+    (cd "$d/w" && hook "$d" --pre-edit && echo more >>file.txt && hook "$d" --session-end)
+    check "no PWNED file (${pub:-unpublished})" test ! -e "$d/w/PWNED" -a ! -e "$d/PWNED"
+    if [[ -n "$pub" ]]; then
+        check "checkpoint stored under literal ref" \
+            git -C "$d/w" rev-parse -q --verify "refs/checkpoints/$EVIL"
+    fi
+    rm -rf "$d"
+done
+
+echo "Case 6: detached HEAD is never checkpointed"
+d="$(setup publish)"; h="$(head_sha "$d")"
+git -C "$d/w" checkout -q --detach
+echo dirty >"$d/w/file.txt"
+hook "$d" --pre-edit; hook "$d" --session-end
+check "HEAD not moved" test "$h" == "$(head_sha "$d")"
+check "no checkpoint ref written" test -z "$(git -C "$d/w" for-each-ref refs/checkpoints)"
+rm -rf "$d"
+
+echo "Case 7: session-end never squashes (rewrites) a published branch"
+d="$(setup publish)"
+for i in 1 2; do
+    echo "$i" >"$d/w/file.txt"
+    git -C "$d/w" commit -q -am "Checkpoint before editing file.txt"
+done
+h="$(head_sha "$d")"
+hook "$d" --session-end
+check "published history not rewritten" test "$h" == "$(head_sha "$d")"
+rm -rf "$d"
+
 echo
 echo "Result: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
