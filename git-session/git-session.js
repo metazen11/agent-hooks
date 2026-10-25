@@ -9,14 +9,13 @@
  *
  * USAGE:
  *   node git-session.js --session-start   # Initialize git, create working branch
- *   node git-session.js --session-end     # Commit and push changes
+ *   node git-session.js --session-end     # Commit changes locally (never pushes)
  *   node git-session.js --pre-edit        # Checkpoint before Edit/Write tools
  *   node git-session.js --help            # Show help
  *
  * CONFIGURATION (environment variables):
  *   GIT_HOOK_PROTECTED_BRANCHES=main,master,dev,develop  # Auto-branch from these
  *   GIT_HOOK_BRANCH_PREFIX=claude                        # Prefix for auto-branches
- *   GIT_HOOK_AUTO_PUSH=true                              # Push on session end
  *   GIT_HOOK_AUTO_PULL=true                              # Pull on session start
  *   GIT_HOOK_CHECKPOINT=true                             # Checkpoint before edits
  *   GIT_HOOK_VERBOSE=true                                # Debug logging
@@ -46,7 +45,7 @@
  *   Run `git-session/test-pre-edit-skips.sh` to verify these paths.
  */
 
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -71,13 +70,16 @@ function isAtOrAboveHome(absPath) {
 const CONFIG = {
     protectedBranches: (process.env.GIT_HOOK_PROTECTED_BRANCHES || 'main,master,dev,develop,staging').split(','),
     branchPrefix: process.env.GIT_HOOK_BRANCH_PREFIX || 'work',
-    autoPush: process.env.GIT_HOOK_AUTO_PUSH !== 'false',
     autoPull: process.env.GIT_HOOK_AUTO_PULL !== 'false',
     checkpoint: process.env.GIT_HOOK_CHECKPOINT !== 'false',
     verbose: process.env.GIT_HOOK_VERBOSE === 'true'
 };
 
 // Track checkpoints to avoid excessive commits
+// Agent runtime state, never checkpointed (agent-memory #197). Top-anchored
+// so it works from any subdirectory; used by hasChanges() and snapshot().
+const RUNTIME_PATHSPEC = [':/', ':(top,exclude).agent-memory-codex', ':(top,exclude).anvil'];
+
 const CHECKPOINT_COOLDOWN_MS = 30000; // 30 seconds between checkpoints
 let lastCheckpointTime = 0;
 
@@ -112,12 +114,17 @@ function log(msg) {
     }
 }
 
+// argv array, no shell: no argument (branch, file name, message) is ever
+// shell-parsed. A string here would be one argv entry, so refuse it loudly.
 function git(args, cwd, options = {}) {
+    if (!Array.isArray(args)) throw new TypeError('git() takes an argv array, not a shell string');
     try {
-        const result = execSync(`git ${args}`, {
+        const result = execFileSync('git', args, {
             cwd,
             encoding: 'utf8',
             stdio: options.stdio || ['pipe', 'pipe', 'pipe'],
+            input: options.input,
+            env: options.env ? { ...process.env, ...options.env } : undefined,
             timeout: 10000 // 10 second timeout
         });
         return { success: true, output: result.trim() };
@@ -143,33 +150,71 @@ function getWorkingDir(hookInput) {
 }
 
 function isGitRepo(dir) {
-    return git('rev-parse --git-dir', dir).success;
+    return git(['rev-parse', '--git-dir'], dir).success;
 }
 
 function getCurrentBranch(dir) {
-    const result = git('rev-parse --abbrev-ref HEAD', dir);
+    const result = git(['rev-parse', '--abbrev-ref', 'HEAD'], dir);
     return result.success ? result.output : null;
 }
 
 function hasChanges(dir) {
-    const status = git('status --porcelain', dir);
+    const status = git(['status', '--porcelain', '--', ...RUNTIME_PATHSPEC], dir);
     return status.success && status.output.length > 0;
 }
 
+// A branch that exists on origin may be a PR head (possibly already audited).
+// ponytail: "published" stands in for "has an open PR" (local, no gh call,
+// errs toward the side ref); query gh only if side refs ever get in the way.
+function isPublished(dir, branch) {
+    return git(['rev-parse', '--verify', '-q', '@{upstream}'], dir).success
+        || git(['rev-parse', '--verify', '-q', `refs/remotes/origin/${branch}`], dir).success;
+}
+
+/**
+ * The ONLY place git-session records work. Hooks never push (#33).
+ *   - unpublished branch: a normal local commit on the branch.
+ *   - published branch:   the branch and index are left untouched; the tree is
+ *     snapshotted to refs/checkpoints/<branch> (reflog keeps the history).
+ * The side ref holds the whole working tree (like `git stash create`); the
+ * real index keeps the user's staged/unstaged split.
+ * Runtime dirs (RUNTIME_PATHSPEC) are excluded either way.
+ */
+function snapshot(dir, branch, message) {
+    if (!branch || branch === 'HEAD') return { success: false, output: 'detached HEAD: not checkpointed' };
+    if (!isPublished(dir, branch)) {
+        git(['add', '-A', '--', ...RUNTIME_PATHSPEC], dir);
+        return git(['commit', '-F', '-'], dir, { input: message });
+    }
+    const gitPath = (p) => path.resolve(dir, git(['rev-parse', '--git-path', p], dir).output);
+    const tmpIndex = gitPath(`checkpoint-index-${process.pid}`);
+    try {
+        try { fs.copyFileSync(gitPath('index'), tmpIndex); } catch (e) { /* fresh repo: empty index */ }
+        const env = { GIT_INDEX_FILE: tmpIndex };
+        const add = git(['add', '-A', '--', ...RUNTIME_PATHSPEC], dir, { env });
+        const tree = add.success && git(['write-tree'], dir, { env });
+        const commit = tree && tree.success && git(['commit-tree', tree.output, '-p', 'HEAD', '-F', '-'], dir, { input: message });
+        if (!commit || !commit.success) return { success: false, output: 'side-ref snapshot failed' };
+        return git(['update-ref', '--create-reflog', '-m', 'checkpoint', `refs/checkpoints/${branch}`, commit.output], dir);
+    } finally {
+        try { fs.unlinkSync(tmpIndex); } catch (e) { /* best-effort */ }
+    }
+}
+
 function hasStagedChanges(dir) {
-    const result = git('diff --cached --quiet', dir);
+    const result = git(['diff', '--cached', '--quiet'], dir);
     return !result.success; // Returns non-zero if there are staged changes
 }
 
 function hasRemote(dir) {
-    const result = git('remote', dir);
+    const result = git(['remote'], dir);
     return result.success && result.output.includes('origin');
 }
 
 // Path to the busy-lock inside the repo's .git dir. Returns null if the dir
 // is not a git repo or .git is unreadable (corrupted submodule, etc.).
 function busyLockPath(dir) {
-    const gitDir = git('rev-parse --git-dir', dir);
+    const gitDir = git(['rev-parse', '--git-dir'], dir);
     if (!gitDir.success) return null;
     const resolved = path.isAbsolute(gitDir.output)
         ? gitDir.output
@@ -220,7 +265,7 @@ function generateBranchName(sessionId, cwd) {
     const baseName = `${CONFIG.branchPrefix}/session-${date}`;
 
     // Check if base branch exists, if so add a suffix
-    const baseExists = git(`rev-parse --verify ${baseName}`, cwd).success;
+    const baseExists = git(['rev-parse', '--verify', baseName], cwd).success;
     if (!baseExists) {
         return baseName;
     }
@@ -229,7 +274,7 @@ function generateBranchName(sessionId, cwd) {
     for (let i = 0; i < 26; i++) {
         const suffix = String.fromCharCode(97 + i); // a, b, c, ...
         const branchName = `${baseName}-${suffix}`;
-        const exists = git(`rev-parse --verify ${branchName}`, cwd).success;
+        const exists = git(['rev-parse', '--verify', branchName], cwd).success;
         if (!exists) {
             return branchName;
         }
@@ -240,7 +285,7 @@ function generateBranchName(sessionId, cwd) {
 }
 
 function formatChangeSummary(dir) {
-    const status = git('status --porcelain', dir);
+    const status = git(['status', '--porcelain', '--', ...RUNTIME_PATHSPEC], dir);
     if (!status.success) return 'Changes';
 
     const lines = status.output.split('\n').filter(Boolean);
@@ -414,13 +459,13 @@ function handleSessionStart(hookInput) {
             return outputResult('SessionStart', {});
         }
         log('Not a git repo - initializing');
-        git('init', cwd);
-        git('config user.email "claude@session.local"', cwd);
-        git('config user.name "Claude Code"', cwd);
+        git(['init'], cwd);
+        git(['config', 'user.email', 'claude@session.local'], cwd);
+        git(['config', 'user.name', 'Claude Code'], cwd);
 
         if (hasChanges(cwd)) {
-            git('add -A', cwd);
-            git('commit -m "Initial commit"', cwd);
+            git(['add', '-A', '--', ...RUNTIME_PATHSPEC], cwd);
+            git(['commit', '-m', 'Initial commit'], cwd);
         }
 
         return outputResult('SessionStart', {
@@ -457,7 +502,7 @@ function handleSessionStart(hookInput) {
     // Step 2: Pull latest if remote exists and no local changes
     if (CONFIG.autoPull && hasRemote(cwd) && !hasChanges(cwd)) {
         log(`Pulling latest from origin/${currentBranch}`);
-        const pullResult = git(`pull --ff-only origin ${currentBranch}`, cwd);
+        const pullResult = git(['pull', '--ff-only', 'origin', currentBranch], cwd);
         if (pullResult.success && pullResult.output && !pullResult.output.includes('Already up to date')) {
             const firstLine = pullResult.output.split('\n')[0];
             log(`Pulled updates: ${firstLine}`);
@@ -473,7 +518,7 @@ function handleSessionStart(hookInput) {
         const newBranch = generateBranchName(sessionId, cwd);
         log(`On protected branch - creating '${newBranch}'`);
 
-        const createResult = git(`checkout -b ${newBranch}`, cwd);
+        const createResult = git(['checkout', '-b', newBranch], cwd);
         if (createResult.success) {
             messages.push(`Created working branch '${newBranch}' from '${currentBranch}'.`);
         } else {
@@ -483,7 +528,7 @@ function handleSessionStart(hookInput) {
 
     // Step 4: Add branch + recent git log context with changed files
     const activeBranch = getCurrentBranch(cwd) || currentBranch;
-    const recentLog = git('log --oneline --name-only -3', cwd);
+    const recentLog = git(['log', '--oneline', '--name-only', '-3'], cwd);
     const statusSummary = hasChanges(cwd) ? ' (uncommitted changes)' : '';
 
     let gitContext = `Branch: ${activeBranch}${statusSummary}`;
@@ -533,12 +578,12 @@ function squashCheckpoints(cwd, branch) {
     // Determine the boundary of "unpushed": @{upstream} if it exists, else
     // fall back to the merge-base with the first protected branch we find.
     let boundary = null;
-    const upstream = git('rev-parse --abbrev-ref --symbolic-full-name @{upstream}', cwd);
+    const upstream = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], cwd);
     if (upstream.success && upstream.output && upstream.output !== '@{upstream}') {
         boundary = upstream.output;
     } else {
         for (const p of CONFIG.protectedBranches) {
-            const mb = git(`merge-base HEAD ${p}`, cwd);
+            const mb = git(['merge-base', 'HEAD', p], cwd);
             if (mb.success && mb.output) {
                 boundary = mb.output;
                 break;
@@ -550,7 +595,7 @@ function squashCheckpoints(cwd, branch) {
     }
 
     // List candidate commits from HEAD back to the boundary (exclusive).
-    const range = git(`log ${boundary}..HEAD --pretty=format:%H%x09%s`, cwd);
+    const range = git(['log', `${boundary}..HEAD`, '--pretty=format:%H%x09%s'], cwd);
     if (!range.success || !range.output) {
         return { squashed: 0, recoveryRef: null, message: 'no unpushed commits' };
     }
@@ -581,10 +626,10 @@ function squashCheckpoints(cwd, branch) {
     // from the remote. Be explicit: check each candidate against the actual
     // remote ref for this branch.
     if (hasRemote(cwd)) {
-        const remoteRef = git(`rev-parse refs/remotes/origin/${branch}`, cwd);
+        const remoteRef = git(['rev-parse', `refs/remotes/origin/${branch}`], cwd);
         if (remoteRef.success && remoteRef.output) {
             for (const sha of checkpointShas) {
-                const onRemote = git(`merge-base --is-ancestor ${sha} ${remoteRef.output}`, cwd);
+                const onRemote = git(['merge-base', '--is-ancestor', sha, remoteRef.output], cwd);
                 if (onRemote.success) {
                     return {
                         squashed: 0,
@@ -598,7 +643,7 @@ function squashCheckpoints(cwd, branch) {
 
     // The squash target is the parent of the OLDEST checkpoint in our run.
     const oldestCheckpoint = checkpointShas[checkpointShas.length - 1];
-    const parentLookup = git(`rev-parse ${oldestCheckpoint}^`, cwd);
+    const parentLookup = git(['rev-parse', `${oldestCheckpoint}^`], cwd);
     if (!parentLookup.success) {
         return { squashed: 0, recoveryRef: null, message: `cannot resolve parent of ${oldestCheckpoint}` };
     }
@@ -608,7 +653,7 @@ function squashCheckpoints(cwd, branch) {
     // resetting to squashTarget and re-applying everything. (It is, by
     // definition — all the commits are ancestors of HEAD.) We just sanity
     // check that squashTarget is reachable.
-    const reachable = git(`merge-base --is-ancestor ${squashTarget} HEAD`, cwd);
+    const reachable = git(['merge-base', '--is-ancestor', squashTarget, 'HEAD'], cwd);
     if (!reachable.success) {
         return { squashed: 0, recoveryRef: null, message: `${squashTarget} is not an ancestor of HEAD` };
     }
@@ -616,17 +661,17 @@ function squashCheckpoints(cwd, branch) {
     // Write a recovery ref pointing at the current HEAD before we rewrite.
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const recoveryRef = `refs/checkpoint-recovery/${branch}-${stamp}`;
-    const headSha = git('rev-parse HEAD', cwd);
+    const headSha = git(['rev-parse', 'HEAD'], cwd);
     if (!headSha.success) {
         return { squashed: 0, recoveryRef: null, message: 'cannot resolve HEAD' };
     }
-    const refUpdate = git(`update-ref ${recoveryRef} ${headSha.output}`, cwd);
+    const refUpdate = git(['update-ref', recoveryRef, headSha.output], cwd);
     if (!refUpdate.success) {
         return { squashed: 0, recoveryRef: null, message: `cannot write recovery ref: ${refUpdate.output}` };
     }
 
     // Derive a commit message. Cap file list at 10 entries.
-    const filesChanged = git(`diff --name-only ${squashTarget}..HEAD`, cwd);
+    const filesChanged = git(['diff', '--name-only', `${squashTarget}..HEAD`], cwd);
     const fileList = filesChanged.success
         ? filesChanged.output.split('\n').filter(Boolean)
         : [];
@@ -647,21 +692,21 @@ function squashCheckpoints(cwd, branch) {
     const fullMsg = `${msgSubject}\n\n${msgBody}`;
 
     // Soft-reset to the squash target, then commit.
-    const reset = git(`reset --soft ${squashTarget}`, cwd);
+    const reset = git(['reset', '--soft', squashTarget], cwd);
     if (!reset.success) {
         // Roll back the recovery ref since we didn't actually rewrite.
-        git(`update-ref -d ${recoveryRef}`, cwd);
+        git(['update-ref', '-d', recoveryRef], cwd);
         return { squashed: 0, recoveryRef: null, message: `reset failed: ${reset.output}` };
     }
     // Write the message to a tempfile and use -F so newlines are preserved
     // verbatim (JSON.stringify shell-escapes them as \n literals — wrong).
     const msgFile = path.join(cwd, '.git', `.checkpoint-squash-msg-${Date.now()}`);
     fs.writeFileSync(msgFile, fullMsg);
-    const commit = git(`commit --no-verify -F ${JSON.stringify(msgFile)}`, cwd);
+    const commit = git(['commit', '--no-verify', '-F', msgFile], cwd);
     try { fs.unlinkSync(msgFile); } catch (e) { /* best-effort */ }
     if (!commit.success) {
         // Best-effort restore.
-        git(`reset --hard ${recoveryRef}`, cwd);
+        git(['reset', '--hard', recoveryRef], cwd);
         return { squashed: 0, recoveryRef: null, message: `commit failed: ${commit.output}` };
     }
 
@@ -715,7 +760,7 @@ function handleSessionEnd(hookInput) {
         if (CONFIG.protectedBranches.includes(currentBranch)) {
             const redirectBranch = generateBranchName(sessionId, cwd);
             log(`On protected branch '${currentBranch}' with uncommitted changes — redirecting to '${redirectBranch}'`);
-            const checkoutResult = git(`checkout -b ${redirectBranch}`, cwd);
+            const checkoutResult = git(['checkout', '-b', redirectBranch], cwd);
             if (!checkoutResult.success) {
                 log(`Could not create redirect branch: ${checkoutResult.output}`);
                 // Bail loudly rather than commit to the protected branch.
@@ -732,10 +777,9 @@ function handleSessionEnd(hookInput) {
             };
         }
 
-        git('add -A', cwd);
         const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
         const commitMsg = `Claude session end: ${changeSummary}\n\nAuto-committed at ${timestamp}`;
-        const commitResult = git(`commit -m "${commitMsg.replace(/"/g, '\\"')}"`, cwd);
+        const commitResult = snapshot(cwd, currentBranch, commitMsg);
         if (!commitResult.success) {
             log(`Final commit failed: ${commitResult.output}`);
             // Don't squash if we couldn't commit — state is suspect.
@@ -747,7 +791,7 @@ function handleSessionEnd(hookInput) {
         // If we redirected, capture the SHA + write a handoff marker file
         // so the next session-start can surface it (any agent, any tool).
         if (handoffMarker) {
-            const shaResult = git('rev-parse HEAD', cwd);
+            const shaResult = git(['rev-parse', 'HEAD'], cwd);
             handoffMarker.commitSha = shaResult.success ? shaResult.output.trim() : 'unknown';
             handoffMarker.timestamp = timestamp;
             writeHandoffMarker(cwd, handoffMarker);
@@ -760,7 +804,8 @@ function handleSessionEnd(hookInput) {
     // 2) Squash any contiguous auto-checkpoints below HEAD into one commit.
     //    Controlled by GIT_HOOK_SQUASH_CHECKPOINTS (default: true).
     const squashEnabled = process.env.GIT_HOOK_SQUASH_CHECKPOINTS !== 'false';
-    if (squashEnabled) {
+    // Never rewrite a published branch (possible PR head) either.
+    if (squashEnabled && !isPublished(cwd, currentBranch)) {
         const squashResult = squashCheckpoints(cwd, currentBranch);
         if (squashResult.squashed > 0) {
             log(`Squashed ${squashResult.squashed} checkpoint commits (recovery: ${squashResult.recoveryRef})`);
@@ -770,17 +815,7 @@ function handleSessionEnd(hookInput) {
         }
     }
 
-    // 3) Push if configured and safe.
-    if (CONFIG.autoPush && hasRemote(cwd) && !CONFIG.protectedBranches.includes(currentBranch)) {
-        log(`Pushing to origin/${currentBranch}`);
-        // After a squash, history was rewritten. Use --force-with-lease so we
-        // never clobber someone else's work, but allow our own rewrite to land.
-        const pushResult = git(`push --force-with-lease -u origin ${currentBranch}`, cwd);
-        if (!pushResult.success) {
-            log(`Push failed: ${pushResult.output}`);
-            messages.push(`Push failed (likely needs manual review): ${pushResult.output.split('\n')[0]}`);
-        }
-    }
+    // No push, ever (#33): pushing is the agent's explicit `git push`.
 
     if (messages.length > 0) {
         console.error(`[git-session] ${messages.join(' | ')}`);
@@ -857,7 +892,7 @@ function handlePreEdit(hookInput) {
 
     // Skip during rebase / merge / cherry-pick / detached HEAD — committing
     // here strands work on a non-branch ref and breaks history.
-    const gitDir = git('rev-parse --git-dir', cwd).output.trim() || '.git';
+    const gitDir = git(['rev-parse', '--git-dir'], cwd).output.trim() || '.git';
     const inProgressMarkers = [
         'rebase-merge', 'rebase-apply',
         'MERGE_HEAD', 'CHERRY_PICK_HEAD',
@@ -875,7 +910,7 @@ function handlePreEdit(hookInput) {
             }
         } catch (e) { /* best-effort */ }
     }
-    const branchRef = git('symbolic-ref -q HEAD', cwd);
+    const branchRef = git(['symbolic-ref', '-q', 'HEAD'], cwd);
     if (!branchRef.success || !branchRef.output.trim()) {
         log('Skipping checkpoint - detached HEAD');
         return outputResult('PreToolUse', {});
@@ -884,7 +919,7 @@ function handlePreEdit(hookInput) {
     // Skip if a branch switch / reset / rebase happened in the last 10 seconds.
     // Checkpointing right after a switch can land work on the wrong branch
     // when the working tree carries unstaged changes across the switch.
-    const reflog = git('reflog --date=unix HEAD -10', cwd);
+    const reflog = git(['reflog', '--date=unix', 'HEAD', '-10'], cwd);
     if (reflog.success) {
         const nowSec = Math.floor(Date.now() / 1000);
         const lines = reflog.output.split('\n').slice(0, 10);
@@ -917,13 +952,10 @@ function handlePreEdit(hookInput) {
     const targetFile = toolInput.file_path;
     const shortFile = targetFile ? path.basename(targetFile) : 'files';
 
-    // Create checkpoint commit
-    git('add -A', cwd);
-
     const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
     const commitMsg = `Checkpoint before editing ${shortFile}\n\nAuto-checkpoint at ${timestamp}`;
 
-    const commitResult = git(`commit -m "${commitMsg.replace(/"/g, '\\"')}"`, cwd);
+    const commitResult = snapshot(cwd, getCurrentBranch(cwd), commitMsg);
     if (commitResult.success) {
         lastCheckpointTime = now;
         log(`Checkpoint created before editing ${shortFile}`);
@@ -947,14 +979,13 @@ USAGE:
 
 COMMANDS:
   --session-start    Initialize git, create working branch if on main/dev
-  --session-end      Commit and push all changes
+  --session-end      Commit all changes locally (never pushes)
   --pre-edit         Create checkpoint commit before destructive operations
   --help             Show this help
 
 ENVIRONMENT VARIABLES:
   GIT_HOOK_PROTECTED_BRANCHES  Branches to auto-branch from (default: main,master,dev,develop)
   GIT_HOOK_BRANCH_PREFIX       Auto-branch prefix (default: claude)
-  GIT_HOOK_AUTO_PUSH           Push on session end (default: true)
   GIT_HOOK_AUTO_PULL           Pull on session start (default: true)
   GIT_HOOK_CHECKPOINT          Checkpoint before edits (default: true)
   GIT_HOOK_VERBOSE             Debug logging (default: false)
@@ -967,7 +998,7 @@ BEHAVIOR:
 
   Session End:
     - Commit all changes with summary
-    - Push to remote (unless on protected branch)
+    - Never pushes; on a published branch (PR head) snapshots to refs/checkpoints/<branch> instead
 
   Pre-Edit:
     - Create checkpoint commit before destructive operations

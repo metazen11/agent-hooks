@@ -171,7 +171,7 @@ Automated git workflow for Claude Code sessions. Handles branch management, chec
 
 - **SessionStart**: Pull latest, create working branch if on protected branch
 - **PreToolUse**: Checkpoint commit before destructive operations (Edit, Write, rm, etc.)
-- **SessionEnd**: Commit all changes, push to remote
+- **SessionEnd**: Commit all changes locally. Never pushes. On a branch that exists on origin (a possible PR head) the branch is left untouched and the work is snapshotted to `refs/checkpoints/<branch>`; the same applies to pre-edit checkpoints. `.agent-memory-codex/` and `.anvil/` are never checkpointed
 
 ```bash
 cd git-session
@@ -179,7 +179,7 @@ node install.js            # symlinks into ~/.claude/hooks/ + patches settings
 node install.js --uninstall
 ```
 
-Configure via environment variables: `GIT_HOOK_PROTECTED_BRANCHES`, `GIT_HOOK_AUTO_PUSH`, `GIT_HOOK_AUTO_PULL`, `GIT_HOOK_CHECKPOINT`, `GIT_HOOK_VERBOSE`.
+Configure via environment variables: `GIT_HOOK_PROTECTED_BRANCHES`, `GIT_HOOK_AUTO_PULL`, `GIT_HOOK_CHECKPOINT`, `GIT_HOOK_VERBOSE`.
 
 **Checkpoint skip conditions** — to prevent racing the agent's own git operations, the pre-edit checkpoint is suppressed when any of these are true:
 
