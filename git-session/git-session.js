@@ -142,6 +142,14 @@ function getWorkingDir(hookInput) {
     return hookInput.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 }
 
+// Pathspec limiting a git command to the session dir's subtree. Empty at a
+// true repo root (commands stay byte-identical); ' -- .' in a subdir of a
+// larger repo so sibling projects' status/log/commits are never touched.
+function scope(dir) {
+    const prefix = git('rev-parse --show-prefix', dir);
+    return prefix.success && prefix.output ? ' -- .' : '';
+}
+
 function isGitRepo(dir) {
     return git('rev-parse --git-dir', dir).success;
 }
@@ -152,12 +160,12 @@ function getCurrentBranch(dir) {
 }
 
 function hasChanges(dir) {
-    const status = git('status --porcelain', dir);
+    const status = git(`status --porcelain${scope(dir)}`, dir);
     return status.success && status.output.length > 0;
 }
 
 function hasStagedChanges(dir) {
-    const result = git('diff --cached --quiet', dir);
+    const result = git(`diff --cached --quiet${scope(dir)}`, dir);
     return !result.success; // Returns non-zero if there are staged changes
 }
 
@@ -240,7 +248,7 @@ function generateBranchName(sessionId, cwd) {
 }
 
 function formatChangeSummary(dir) {
-    const status = git('status --porcelain', dir);
+    const status = git(`status --porcelain${scope(dir)}`, dir);
     if (!status.success) return 'Changes';
 
     const lines = status.output.split('\n').filter(Boolean);
@@ -483,7 +491,7 @@ function handleSessionStart(hookInput) {
 
     // Step 4: Add branch + recent git log context with changed files
     const activeBranch = getCurrentBranch(cwd) || currentBranch;
-    const recentLog = git('log --oneline --name-only -3', cwd);
+    const recentLog = git(`log --oneline --name-only -3${scope(cwd)}`, cwd);
     const statusSummary = hasChanges(cwd) ? ' (uncommitted changes)' : '';
 
     let gitContext = `Branch: ${activeBranch}${statusSummary}`;
@@ -550,6 +558,8 @@ function squashCheckpoints(cwd, branch) {
     }
 
     // List candidate commits from HEAD back to the boundary (exclusive).
+    // Deliberately UNscoped: an interleaved sibling-project commit must end the
+    // contiguous-checkpoint walk, else reset --soft would swallow it.
     const range = git(`log ${boundary}..HEAD --pretty=format:%H%x09%s`, cwd);
     if (!range.success || !range.output) {
         return { squashed: 0, recoveryRef: null, message: 'no unpushed commits' };
@@ -626,7 +636,7 @@ function squashCheckpoints(cwd, branch) {
     }
 
     // Derive a commit message. Cap file list at 10 entries.
-    const filesChanged = git(`diff --name-only ${squashTarget}..HEAD`, cwd);
+    const filesChanged = git(`diff --name-only ${squashTarget}..HEAD${scope(cwd)}`, cwd);
     const fileList = filesChanged.success
         ? filesChanged.output.split('\n').filter(Boolean)
         : [];
@@ -655,9 +665,9 @@ function squashCheckpoints(cwd, branch) {
     }
     // Write the message to a tempfile and use -F so newlines are preserved
     // verbatim (JSON.stringify shell-escapes them as \n literals — wrong).
-    const msgFile = path.join(cwd, '.git', `.checkpoint-squash-msg-${Date.now()}`);
+    const msgFile = path.resolve(cwd, git('rev-parse --git-dir', cwd).output, `.checkpoint-squash-msg-${Date.now()}`);
     fs.writeFileSync(msgFile, fullMsg);
-    const commit = git(`commit --no-verify -F ${JSON.stringify(msgFile)}`, cwd);
+    const commit = git(`commit --no-verify -F ${JSON.stringify(msgFile)}${scope(cwd)}`, cwd);
     try { fs.unlinkSync(msgFile); } catch (e) { /* best-effort */ }
     if (!commit.success) {
         // Best-effort restore.
@@ -732,10 +742,10 @@ function handleSessionEnd(hookInput) {
             };
         }
 
-        git('add -A', cwd);
+        git(`add -A${scope(cwd)}`, cwd);
         const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
         const commitMsg = `Claude session end: ${changeSummary}\n\nAuto-committed at ${timestamp}`;
-        const commitResult = git(`commit -m "${commitMsg.replace(/"/g, '\\"')}"`, cwd);
+        const commitResult = git(`commit -m "${commitMsg.replace(/"/g, '\\"')}"${scope(cwd)}`, cwd);
         if (!commitResult.success) {
             log(`Final commit failed: ${commitResult.output}`);
             // Don't squash if we couldn't commit — state is suspect.
@@ -918,12 +928,12 @@ function handlePreEdit(hookInput) {
     const shortFile = targetFile ? path.basename(targetFile) : 'files';
 
     // Create checkpoint commit
-    git('add -A', cwd);
+    git(`add -A${scope(cwd)}`, cwd);
 
     const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
     const commitMsg = `Checkpoint before editing ${shortFile}\n\nAuto-checkpoint at ${timestamp}`;
 
-    const commitResult = git(`commit -m "${commitMsg.replace(/"/g, '\\"')}"`, cwd);
+    const commitResult = git(`commit -m "${commitMsg.replace(/"/g, '\\"')}"${scope(cwd)}`, cwd);
     if (commitResult.success) {
         lastCheckpointTime = now;
         log(`Checkpoint created before editing ${shortFile}`);
