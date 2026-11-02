@@ -149,13 +149,23 @@ function getWorkingDir(hookInput) {
     return hookInput.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 }
 
-// True when dir is a SUBDIRECTORY of a larger repo (non-empty --show-prefix).
-// Every scoping pathspec is gated on this so a true repo root runs exactly the
-// commands it always did (a root `log -- .` would even change history
-// simplification and drop empty commits) (#36).
+// True when dir is a SUBDIRECTORY of a larger repo. Every scoping change is
+// gated on this so a true repo root runs exactly the git argv it always did
+// (a root `log -- .` would even drop empty commits) (#36; AC3, verified by
+// test-root-argv-identical.sh). Root is decided from the filesystem first (a
+// `.git` entry, dir OR file, directly in dir, or GIT_DIR/GIT_WORK_TREE set), so
+// no extra git call is made at a root; `rev-parse --show-prefix` only runs when
+// dir has no `.git`. Memoized per dir for the process.
+const subdirCache = new Map();
 function inSubdir(dir) {
-    const prefix = git(['rev-parse', '--show-prefix'], dir);
-    return prefix.success && prefix.output.length > 0;
+    if (subdirCache.has(dir)) return subdirCache.get(dir);
+    let sub = false;
+    if (!process.env.GIT_DIR && !process.env.GIT_WORK_TREE && !fs.existsSync(path.join(dir, '.git'))) {
+        const prefix = git(['rev-parse', '--show-prefix'], dir);
+        sub = prefix.success && prefix.output.length > 0;
+    }
+    subdirCache.set(dir, sub);
+    return sub;
 }
 
 // Trailing pathspec limiting log/diff/commit to the session subtree; empty at root.
@@ -164,11 +174,18 @@ function subdirSpec(dir) {
 }
 
 // Pathspec for status/add. Subdir: the session subtree ('.'), so sibling
-// projects are neither seen nor committed. Root (or wide=true): whole repo.
-function runtimePathspec(dir, wide = false) {
-    if (wide || !inSubdir(dir)) return [':/', ...RUNTIME_DIRS.map((d) => `:(top,exclude)${d}`)];
+// projects are neither seen nor committed. Root: whole repo.
+function runtimePathspec(dir) {
+    if (!inSubdir(dir)) return [':/', ...RUNTIME_DIRS.map((d) => `:(top,exclude)${d}`)];
     // Subdir: cwd-relative excludes, so the session dir's own runtime dirs are skipped.
     return ['.', ...RUNTIME_DIRS.map((d) => `:(exclude)${d}`)];
+}
+
+// Commit pathspec for the session-end/checkpoint commit. Subdir only: limits
+// the commit to the session subtree AND applies the same runtime excludes as
+// `add`, so tracked runtime files under cwd are not swept in. Empty at root.
+function commitSpec(dir) {
+    return inSubdir(dir) ? ['--', ...runtimePathspec(dir)] : [];
 }
 
 function isGitRepo(dir) {
@@ -180,9 +197,8 @@ function getCurrentBranch(dir) {
     return result.success ? result.output : null;
 }
 
-// wide=true: whole repo even from a subdir (for operations that act repo-wide).
-function hasChanges(dir, wide = false) {
-    const status = git(['status', '--porcelain', '--', ...runtimePathspec(dir, wide)], dir);
+function hasChanges(dir) {
+    const status = git(['status', '--porcelain', '--', ...runtimePathspec(dir)], dir);
     return status.success && status.output.length > 0;
 }
 
@@ -207,7 +223,7 @@ function snapshot(dir, branch, message) {
     if (!branch || branch === 'HEAD') return { success: false, output: 'detached HEAD: not checkpointed' };
     if (!isPublished(dir, branch)) {
         git(['add', '-A', '--', ...runtimePathspec(dir)], dir);
-        return git(['commit', '-F', '-', ...subdirSpec(dir)], dir, { input: message });
+        return git(['commit', '-F', '-', ...commitSpec(dir)], dir, { input: message });
     }
     const gitPath = (p) => path.resolve(dir, git(['rev-parse', '--git-path', p], dir).output);
     const tmpIndex = gitPath(`checkpoint-index-${process.pid}`);
@@ -487,7 +503,7 @@ function handleSessionStart(hookInput) {
         git(['config', 'user.name', 'Claude Code'], cwd);
 
         if (hasChanges(cwd)) {
-            git(['add', '-A', '--', ...runtimePathspec(dir)], cwd);
+            git(['add', '-A', '--', ...runtimePathspec(cwd)], cwd);
             git(['commit', '-m', 'Initial commit'], cwd);
         }
 
@@ -601,9 +617,11 @@ function squashCheckpoints(cwd, branch) {
         return { squashed: 0, recoveryRef: null, message: `protected branch ${branch}` };
     }
 
-    // Working tree must be clean REPO-WIDE (reset --soft is repo-wide), even
-    // when the session is in a subdirectory.
-    if (hasChanges(cwd, true)) {
+    // Working tree must be clean — otherwise the rollback's reset --hard would
+    // clobber it. From a subdir the squash rewrites repo-wide HEAD/index, so
+    // anything STAGED anywhere also blocks it; unstaged/untracked sibling files
+    // are untouched by reset --soft and by the subdir rollback (--soft).
+    if (hasChanges(cwd) || (inSubdir(cwd) && hasStagedChanges(cwd))) {
         return { squashed: 0, recoveryRef: null, message: 'working tree dirty' };
     }
 
@@ -732,13 +750,26 @@ function squashCheckpoints(cwd, branch) {
         git(['update-ref', '-d', recoveryRef], cwd);
         return { squashed: 0, recoveryRef: null, message: `reset failed: ${reset.output}` };
     }
-    // Message via stdin: no tempfile to leak or throw between reset and commit.
-    const commit = git(['commit', '--no-verify', '-F', '-'], cwd, { input: fullMsg });
+    let commit;
+    if (inSubdir(cwd)) {
+        // Subdir: message via stdin (no tempfile to leak between reset and commit).
+        commit = git(['commit', '--no-verify', '-F', '-'], cwd, { input: fullMsg });
+    } else {
+        // Root: original mechanics (tempfile -F), unchanged.
+        const msgFile = path.join(cwd, '.git', `.checkpoint-squash-msg-${Date.now()}`);
+        fs.writeFileSync(msgFile, fullMsg);
+        commit = git(['commit', '--no-verify', '-F', msgFile], cwd);
+        try { fs.unlinkSync(msgFile); } catch (e) { /* best-effort */ }
+    }
     if (!commit.success) {
-        // Best-effort restore.
-        // --soft: moves HEAD back only; never touches the working tree (a
-        // --hard here is repo-wide and would wipe sibling projects' files).
-        git(['reset', '--soft', recoveryRef], cwd);
+        if (inSubdir(cwd)) {
+            // --soft: moves HEAD back only; --hard is repo-wide and would wipe
+            // sibling projects' files.
+            git(['reset', '--soft', recoveryRef], cwd);
+        } else {
+            // Best-effort restore.
+            git(['reset', '--hard', recoveryRef], cwd);
+        }
         return { squashed: 0, recoveryRef: null, message: `commit failed: ${commit.output}` };
     }
 

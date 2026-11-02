@@ -63,7 +63,7 @@ echo "Case D: squash of checkpoints works from a subdir"
 d="$(mkrepo)"; git -C "$d" branch main HEAD~2   # squash boundary = merge-base with a protected branch
 for i in 1 2; do echo "a$i$i" >"$d/a/f.txt"; edit "$d/a" "$d"; sleep 0.1; done
 # cooldown (30s) is in-process only, each invocation is a fresh process
-[[ "$(git -C "$d" log --format=%s | grep -c '^Checkpoint before')" == "2" ]] || { bad "setup: expected 2 checkpoints"; exit 1; }
+[[ "$(git -C "$d" log --format=%s | grep -c '^Checkpoint before')" == "2" ]] || { bad "setup: expected 2 checkpoints"; echo "Result: $PASS passed, $FAIL failed"; exit 1; }
 run --session-end "$d/a" >/dev/null
 [[ "$(git -C "$d" log --format=%s | grep -c 'squash 2 auto-checkpoints')" == "1" ]] && ok "checkpoints squashed from subdir" || bad "squash did not run: $(git -C "$d" log --format=%s | head -3 | tr '\n' '|')"
 
@@ -112,6 +112,36 @@ edit "$d/a" "$d"
 [[ "$(git -C "$d" rev-list --count HEAD)" == "$before" ]] && ok "runtime-only change: no checkpoint" || bad "checkpointed runtime dir"
 echo a9 >"$d/a/f.txt"; edit "$d/a" "$d"
 git -C "$d" show --name-only --format= HEAD | grep -q ".anvil" && bad "a/.anvil in checkpoint" || ok "checkpoint excludes a/.anvil"
+
+echo "Case J: SessionStart in a NON-git dir inits and makes exactly 1 commit (exit 0)"
+d="$(mktemp -d -t agent-hooks-scope-XXXXXX)"; TMPS+=("$d"); echo hi >"$d/file.txt"
+rc=0; printf '{"cwd":"%s"}' "$d" | GIT_CEILING_DIRECTORIES="$(dirname "$d")" node "$HOOK" --session-start >/dev/null 2>&1 || rc=$?
+[[ "$rc" == 0 ]] && ok "exit 0" || bad "exit $rc"
+[[ "$(git -C "$d" rev-list --count HEAD 2>/dev/null || echo 0)" == 1 ]] && ok "exactly 1 commit" || bad "commit count: $(git -C "$d" rev-list --count HEAD 2>&1)"
+
+echo "Case K: tracked runtime file under a/ is not swept into a/ checkpoint"
+d="$(mkrepo)"; mkdir "$d/a/.anvil"; echo s >"$d/a/.anvil/s"; git -C "$d" add -f a/.anvil/s; git -C "$d" commit -q -m "track runtime"
+echo changed >"$d/a/.anvil/s"
+ckpt "$d/a" "$d" a/f.txt
+f="$(git -C "$d" show --name-only --format= HEAD)"
+[[ "$f" == "a/f.txt" ]] && ok "checkpoint has only a/f.txt" || bad "checkpoint files: $f"
+
+echo "Case L: clean tree, forced squash-commit failure from a/ rolls back with reset --soft"
+d="$(mkrepo)"; git -C "$d" branch main HEAD~2
+ckpt "$d/a" "$d" a/f.txt; ckpt "$d/a" "$d" a/f.txt
+head0="$(git -C "$d" rev-parse HEAD)"; aval="$(cat "$d/a/f.txt")"
+git -C "$d" config commit.gpgsign true; git -C "$d" config gpg.program /usr/bin/false
+run --session-end "$d/a" >/dev/null || true
+[[ "$(git -C "$d" rev-parse HEAD)" == "$head0" ]] && ok "HEAD restored" || bad "HEAD moved: $(subjects "$d")"
+[[ "$(cat "$d/a/f.txt")" == "$aval" && -z "$(git -C "$d" status --porcelain)" ]] && ok "tree intact and clean" || bad "tree changed: $(git -C "$d" status --porcelain | tr '\n' ' ')"
+
+echo "Case M: untracked sibling file does not block squash from a/, and survives"
+d="$(mkrepo)"; git -C "$d" branch main HEAD~2
+ckpt "$d/a" "$d" a/f.txt; ckpt "$d/a" "$d" a/f.txt
+echo u >"$d/b/untracked.txt"
+run --session-end "$d/a" >/dev/null || true
+[[ "$(git -C "$d" log --format=%s | grep -c 'squash 2 auto-checkpoints')" == 1 ]] && ok "squash ran" || bad "squash did not run: $(subjects "$d")"
+[[ "$(cat "$d/b/untracked.txt")" == u ]] && ok "untracked b/ file survives" || bad "untracked b/ file lost"
 
 echo "Result: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

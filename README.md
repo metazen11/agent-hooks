@@ -196,7 +196,7 @@ Stale lock files (mtime > 5 min) are ignored — a forgotten `.git/.claude-busy`
 
 Run `git-session/test-pre-edit-skips.sh` to verify these skip paths end-to-end.
 
-**Subdirectory scoping** — when the session cwd is a subfolder of a larger repo (no `.git` of its own), every status / log / `add -A` / commit (checkpoint, session-end, squash) is limited to that subtree with a `-- .` pathspec, so sibling projects' commits are not injected as context and their dirty files are never committed. At a true repo root the behaviour is unchanged. Verify with `git-session/test-subdir-scope.sh` (issue #36).
+**Subdirectory scoping** — when the session cwd is a subfolder of a larger repo (no `.git` of its own), status / log / `add -A` / commit (checkpoint, session-end, squash) are limited to that subtree with a pathspec, so sibling projects' commits are not injected as context and their files are never committed. From a subdir the squash also refuses when anything is staged repo-wide, stops at a checkpoint that touched sibling paths, and rolls back with `reset --soft`. At a true repo root the git argv sequence is byte-identical to before; root is detected from the filesystem (`.git` in cwd) with no extra git call. Verified by `git-session/test-root-argv-identical.sh` (baseline-vs-new PATH-shim trace) and `git-session/test-subdir-scope.sh` (issue #36).
 
 ### reconcile-gate
 
