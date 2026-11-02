@@ -76,9 +76,12 @@ const CONFIG = {
 };
 
 // Track checkpoints to avoid excessive commits
-// Agent runtime state, never checkpointed (agent-memory #197). Top-anchored
-// so it works from any subdirectory; used by hasChanges() and snapshot().
-const RUNTIME_PATHSPEC = [':/', ':(top,exclude).agent-memory-codex', ':(top,exclude).anvil'];
+// Agent runtime state, never checkpointed (agent-memory #197). Excludes are
+// top-anchored so they work from any subdirectory; used by hasChanges() and
+// snapshot(). The positive '.' scopes every status/add to the SESSION dir's
+// subtree (== the repo root at a true root), so a session in a subfolder of a
+// larger repo never sees or commits sibling projects' files (#36).
+const RUNTIME_PATHSPEC = ['.', ':(top,exclude).agent-memory-codex', ':(top,exclude).anvil'];
 
 const CHECKPOINT_COOLDOWN_MS = 30000; // 30 seconds between checkpoints
 let lastCheckpointTime = 0;
@@ -149,6 +152,13 @@ function getWorkingDir(hookInput) {
     return hookInput.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 }
 
+// Commit pathspec: limits `git commit` to the session subtree so sibling files
+// someone else staged are not swept in. Empty at a true repo root (unchanged).
+function commitScope(dir) {
+    const prefix = git(['rev-parse', '--show-prefix'], dir);
+    return prefix.success && prefix.output ? ['--', '.'] : [];
+}
+
 function isGitRepo(dir) {
     return git(['rev-parse', '--git-dir'], dir).success;
 }
@@ -184,7 +194,7 @@ function snapshot(dir, branch, message) {
     if (!branch || branch === 'HEAD') return { success: false, output: 'detached HEAD: not checkpointed' };
     if (!isPublished(dir, branch)) {
         git(['add', '-A', '--', ...RUNTIME_PATHSPEC], dir);
-        return git(['commit', '-F', '-'], dir, { input: message });
+        return git(['commit', '-F', '-', ...commitScope(dir)], dir, { input: message });
     }
     const gitPath = (p) => path.resolve(dir, git(['rev-parse', '--git-path', p], dir).output);
     const tmpIndex = gitPath(`checkpoint-index-${process.pid}`);
@@ -528,7 +538,7 @@ function handleSessionStart(hookInput) {
 
     // Step 4: Add branch + recent git log context with changed files
     const activeBranch = getCurrentBranch(cwd) || currentBranch;
-    const recentLog = git(['log', '--oneline', '--name-only', '-3'], cwd);
+    const recentLog = git(['log', '--oneline', '--name-only', '-3', '--', '.'], cwd);
     const statusSummary = hasChanges(cwd) ? ' (uncommitted changes)' : '';
 
     let gitContext = `Branch: ${activeBranch}${statusSummary}`;
@@ -595,6 +605,8 @@ function squashCheckpoints(cwd, branch) {
     }
 
     // List candidate commits from HEAD back to the boundary (exclusive).
+    // Deliberately UNscoped: an interleaved sibling-project commit must end the
+    // contiguous-checkpoint walk, else reset --soft would swallow it.
     const range = git(['log', `${boundary}..HEAD`, '--pretty=format:%H%x09%s'], cwd);
     if (!range.success || !range.output) {
         return { squashed: 0, recoveryRef: null, message: 'no unpushed commits' };
@@ -671,7 +683,7 @@ function squashCheckpoints(cwd, branch) {
     }
 
     // Derive a commit message. Cap file list at 10 entries.
-    const filesChanged = git(['diff', '--name-only', `${squashTarget}..HEAD`], cwd);
+    const filesChanged = git(['diff', '--name-only', `${squashTarget}..HEAD`, '--', '.'], cwd);
     const fileList = filesChanged.success
         ? filesChanged.output.split('\n').filter(Boolean)
         : [];
@@ -700,9 +712,9 @@ function squashCheckpoints(cwd, branch) {
     }
     // Write the message to a tempfile and use -F so newlines are preserved
     // verbatim (JSON.stringify shell-escapes them as \n literals — wrong).
-    const msgFile = path.join(cwd, '.git', `.checkpoint-squash-msg-${Date.now()}`);
+    const msgFile = path.resolve(cwd, git(['rev-parse', '--git-dir'], cwd).output, `.checkpoint-squash-msg-${Date.now()}`);
     fs.writeFileSync(msgFile, fullMsg);
-    const commit = git(['commit', '--no-verify', '-F', msgFile], cwd);
+    const commit = git(['commit', '--no-verify', '-F', msgFile, ...commitScope(cwd)], cwd);
     try { fs.unlinkSync(msgFile); } catch (e) { /* best-effort */ }
     if (!commit.success) {
         // Best-effort restore.

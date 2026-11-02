@@ -196,6 +196,8 @@ Stale lock files (mtime > 5 min) are ignored — a forgotten `.git/.claude-busy`
 
 Run `git-session/test-pre-edit-skips.sh` to verify these skip paths end-to-end.
 
+**Subdirectory scoping** — when the session cwd is a subfolder of a larger repo (no `.git` of its own), every status / log / `add -A` / commit (checkpoint, session-end, squash) is limited to that subtree with a `-- .` pathspec, so sibling projects' commits are not injected as context and their dirty files are never committed. At a true repo root the behaviour is unchanged. Verify with `git-session/test-subdir-scope.sh` (issue #36).
+
 ### reconcile-gate
 
 Strict-block PreToolUse hook for the branching contract. Global model: single-trunk (feature branch → squash PR → `main`). The gate allows feature → `main` PRs only where the repo opted in with `{"model":"single-trunk"}` in `.reconcile-gate.json` on the SHA-verified `origin/main` (and origin is the repo gh targets); otherwise it fails closed to two-trunk (`--base` `main`/`master`, `--head` `dev`/`develop`). Always denies `gh pr merge --admin`, `git push` to `main`/`master` (including bare pushes from `main`, `--all`, `--mirror`) in every chained command segment. Bypass with `--force-anyway`.
