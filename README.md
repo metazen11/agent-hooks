@@ -169,9 +169,27 @@ See [`env-guard/README.md`](env-guard/README.md) for full documentation.
 
 Automated git workflow for Claude Code sessions. Handles branch management, checkpoints, and session cleanup.
 
-- **SessionStart**: Pull latest, create working branch if on protected branch
+- **SessionStart**: Pull latest, create working branch if on protected branch; recover detached checkouts onto a named branch before work continues
 - **PreToolUse**: Checkpoint commit before destructive operations (Edit, Write, rm, etc.)
 - **SessionEnd**: Commit all changes locally. Never pushes. On a branch that exists on origin (a possible PR head) the branch is left untouched and the work is snapshotted to `refs/checkpoints/<branch>`; the same applies to pre-edit checkpoints. `.agent-memory-codex/` and `.anvil/` are never checkpointed
+
+Detached checkouts are not created by this hook. At SessionStart, it captures the
+current commit and full status, then creates a unique `work/session-*` branch.
+The base is selected from `GIT_HOOK_INTEGRATION_BRANCH` (`dev`, `origin/dev`,
+or `refs/remotes/origin/dev`) when configured; otherwise a repo declaring
+`{"model":"single-trunk"}` uses its unique `origin/HEAD`, while a legacy
+two-trunk repo uses the unique `origin/dev` or `origin/develop` ref. If both
+legacy refs exist, no target exists, or the repo policy is invalid or
+unsupported, the hook leaves repository state unchanged and reports the issue. A
+clean checkout that is an ancestor of the target attaches at its tip; dirty
+checkouts and unique commits branch from their current SHA. Recovery uses only
+`git checkout -b`; it does not pull, reset, rebase, cherry-pick, push, merge,
+or delete. If SessionEnd is still detached, it reports that nothing was
+committed and gives the named-branch recovery requirement; SessionEnd cannot
+block session termination.
+
+Run `git-session/test-detached-recovery.sh` for scratch-repository integration
+and regression coverage.
 
 ```bash
 cd git-session

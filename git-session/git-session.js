@@ -16,6 +16,7 @@
  * CONFIGURATION (environment variables):
  *   GIT_HOOK_PROTECTED_BRANCHES=main,master,dev,develop  # Auto-branch from these
  *   GIT_HOOK_BRANCH_PREFIX=claude                        # Prefix for auto-branches
+ *   GIT_HOOK_INTEGRATION_BRANCH=dev                      # Optional detached recovery target
  *   GIT_HOOK_AUTO_PULL=true                              # Pull on session start
  *   GIT_HOOK_CHECKPOINT=true                             # Checkpoint before edits
  *   GIT_HOOK_VERBOSE=true                                # Debug logging
@@ -72,7 +73,8 @@ const CONFIG = {
     branchPrefix: process.env.GIT_HOOK_BRANCH_PREFIX || 'work',
     autoPull: process.env.GIT_HOOK_AUTO_PULL !== 'false',
     checkpoint: process.env.GIT_HOOK_CHECKPOINT !== 'false',
-    verbose: process.env.GIT_HOOK_VERBOSE === 'true'
+    verbose: process.env.GIT_HOOK_VERBOSE === 'true',
+    integrationBranch: process.env.GIT_HOOK_INTEGRATION_BRANCH || ''
 };
 
 // Track checkpoints to avoid excessive commits
@@ -129,7 +131,7 @@ function git(args, cwd, options = {}) {
         });
         return { success: true, output: result.trim() };
     } catch (e) {
-        return { success: false, output: e.stderr?.trim() || e.message };
+        return { success: false, output: e.stderr?.trim() || e.message, status: e.status };
     }
 }
 
@@ -156,6 +158,93 @@ function isGitRepo(dir) {
 function getCurrentBranch(dir) {
     const result = git(['rev-parse', '--abbrev-ref', 'HEAD'], dir);
     return result.success ? result.output : null;
+}
+
+function getRepoRoot(dir) {
+    const result = git(['rev-parse', '--show-toplevel'], dir);
+    return result.success ? result.output : null;
+}
+
+function resolveDetachedRecoveryTarget(dir) {
+    const root = getRepoRoot(dir);
+    if (!root) return { success: false, reason: 'repository root could not be resolved' };
+
+    let targetRef;
+    if (CONFIG.integrationBranch) {
+        const configured = CONFIG.integrationBranch.replace(/^origin\//, '');
+        if (configured.startsWith('refs/')) {
+            if (!configured.startsWith('refs/remotes/origin/')) {
+                return { success: false, reason: 'GIT_HOOK_INTEGRATION_BRANCH must name an origin tracking branch' };
+            }
+            targetRef = configured;
+        } else {
+            targetRef = `refs/remotes/origin/${configured}`;
+        }
+        if (!git(['check-ref-format', targetRef], root).success) {
+            return { success: false, reason: 'GIT_HOOK_INTEGRATION_BRANCH is not a valid origin tracking ref' };
+        }
+    } else {
+        const policyPath = path.join(root, '.reconcile-gate.json');
+        let policy;
+        try {
+            policy = JSON.parse(fs.readFileSync(policyPath, 'utf8'));
+        } catch (e) {
+            if (fs.existsSync(policyPath)) {
+                return { success: false, reason: 'branching policy file is invalid; refusing to guess' };
+            }
+            policy = null;
+        }
+
+        if (policy && !['single-trunk', 'two-trunk'].includes(policy.model)) {
+            return { success: false, reason: 'branching policy model is missing or unsupported; refusing to guess' };
+        }
+        if (policy && policy.model === 'single-trunk') {
+            const head = git(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], root);
+            if (!head.success) return { success: false, reason: 'single-trunk origin/HEAD is missing or ambiguous' };
+            targetRef = head.output;
+        } else {
+            const legacyRefs = ['refs/remotes/origin/dev', 'refs/remotes/origin/develop']
+                .filter((ref) => git(['show-ref', '--verify', '--quiet', ref], root).success);
+            if (legacyRefs.length > 1) {
+                return { success: false, reason: 'both origin/dev and origin/develop exist; set GIT_HOOK_INTEGRATION_BRANCH' };
+            }
+            if (legacyRefs.length === 1) {
+                targetRef = legacyRefs[0];
+            } else {
+                const head = git(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], root);
+                if (!head.success) return { success: false, reason: 'no legacy integration ref or unique origin/HEAD is available' };
+                targetRef = head.output;
+            }
+        }
+    }
+
+    const targetSha = git(['rev-parse', '--verify', `${targetRef}^{commit}`], root);
+    if (!targetSha.success) return { success: false, reason: `configured integration target '${targetRef}' is unavailable` };
+    return { success: true, root, targetRef, targetSha: targetSha.output };
+}
+
+function recoverDetachedWorktree(dir, sessionId) {
+    const head = git(['rev-parse', '--verify', 'HEAD^{commit}'], dir);
+    if (!head.success) return { success: false, reason: 'current detached commit could not be resolved' };
+    const status = git(['status', '--porcelain', '--untracked-files=all'], dir);
+    if (!status.success) return { success: false, reason: 'full worktree status could not be read' };
+    const target = resolveDetachedRecoveryTarget(dir);
+    if (!target.success) return target;
+
+    const dirty = status.output.length > 0;
+    const ancestry = git(['merge-base', '--is-ancestor', head.output, target.targetSha], dir);
+    if (!ancestry.success && ancestry.status !== 1) {
+        return { success: false, reason: `could not compare current commit with integration target: ${ancestry.output}` };
+    }
+    const ancestor = ancestry.success;
+    const baseSha = !dirty && ancestor ? target.targetSha : head.output;
+    const branch = generateBranchName(sessionId, dir);
+    const checkout = git(['checkout', '-b', branch, baseSha], dir);
+    if (!checkout.success) {
+        return { success: false, reason: `could not create '${branch}' at ${baseSha.slice(0, 12)}: ${checkout.output}` };
+    }
+    const mode = dirty ? 'preserved dirty state at current commit' : (ancestor ? `attached clean worktree to ${target.targetRef}` : 'preserved unique commit at current SHA');
+    return { success: true, branch, baseSha, mode, targetRef: target.targetRef };
 }
 
 function hasChanges(dir) {
@@ -474,7 +563,7 @@ function handleSessionStart(hookInput) {
     }
 
     // Get current branch
-    const currentBranch = getCurrentBranch(cwd);
+    let currentBranch = getCurrentBranch(cwd);
     log(`Current branch: ${currentBranch}`);
 
     // Collect messages for combined output
@@ -489,6 +578,21 @@ function handleSessionStart(hookInput) {
         messages.push(...handoffMessages);
     }
 
+    // Runtime-created detached checkouts bypass the protected-branch path.
+    // Attach them before edits, preserving any unique commit or dirty state.
+    let recoveredDetached = false;
+    if (currentBranch === 'HEAD') {
+        const recovery = recoverDetachedWorktree(cwd, sessionId);
+        if (!recovery.success) {
+            const message = `Detached worktree recovery did not change repository state (${recovery.reason}). Create a named branch only after verifying the intended base.`;
+            console.error(`[git-session] ${message}`);
+            return outputResult('SessionStart', { systemMessage: message });
+        }
+        currentBranch = recovery.branch;
+        recoveredDetached = true;
+        messages.push(`Recovered detached checkout as '${recovery.branch}' (${recovery.mode}; base ${recovery.baseSha.slice(0, 12)}).`);
+    }
+
     // Step 1: Check for uncommitted changes on protected branch
     if (CONFIG.protectedBranches.includes(currentBranch) && hasChanges(cwd)) {
         log('Uncommitted changes on protected branch');
@@ -500,7 +604,7 @@ function handleSessionStart(hookInput) {
     }
 
     // Step 2: Pull latest if remote exists and no local changes
-    if (CONFIG.autoPull && hasRemote(cwd) && !hasChanges(cwd)) {
+    if (!recoveredDetached && CONFIG.autoPull && hasRemote(cwd) && !hasChanges(cwd)) {
         log(`Pulling latest from origin/${currentBranch}`);
         const pullResult = git(['pull', '--ff-only', 'origin', currentBranch], cwd);
         if (pullResult.success && pullResult.output && !pullResult.output.includes('Already up to date')) {
@@ -745,6 +849,15 @@ function handleSessionEnd(hookInput) {
     let currentBranch = startingBranch;
     const messages = [];
     let handoffMarker = null;  // populated if we redirect off a protected branch
+
+    if (startingBranch === 'HEAD') {
+        const hasUncommittedWork = hasChanges(cwd);
+        const message = hasUncommittedWork
+            ? 'Session ended while detached; nothing was committed. Create a named recovery branch from the current SHA before continuing.'
+            : 'Session ended while detached. No changes were committed; create a named branch before continuing work.';
+        console.error(`[git-session] ${message}`);
+        return outputResult('SessionEnd', { systemMessage: message });
+    }
 
     // 1) If there are uncommitted changes, make a final session-end commit.
     //    SAFETY: if we're on a protected branch (e.g. develop), redirect the
