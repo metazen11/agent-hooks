@@ -26,7 +26,7 @@ session start. Pass `--no-wire` to symlink without touching settings, and
 safe.
 
 Strict-block gates (`reconcile-gate`, `hf-launch-gate`, `dispatch-gate`,
-`worktree-write-guard`) default to symlink-only and require an explicit
+`worktree-write-guard`, `worktree-cap`) default to symlink-only and require an explicit
 `--wire`, because enabling something that can refuse a tool call is an
 operator decision.
 
@@ -247,6 +247,26 @@ node install.js --uninstall
 ```
 
 See [`worktree-write-guard/README.md`](worktree-write-guard/README.md).
+
+### worktree-cap
+
+Deterministic guard against "reviewed work that never lands". Caps the number of **unlanded** agent worktrees (under `.worktrees/` and `.claude/worktrees/`, HEAD has commits not in `origin/dev` else `origin/main|master`) per repo. The cap lives in a repo-local **`.worktree-cap`** file (commit it): baselined at `unlanded + 3` on first sight and **ratcheted down only** on every check (never raised automatically; edit the file to raise it on purpose). `WORKTREE_CAP=n` overrides without persisting; `WORKTREE_CAP_DISABLE=true` bypasses (logged).
+
+- `cli.js check|report|stop <dir>`, `cli.js add <repo> <git worktree add args>`: the host-agnostic core (exit 0 ok, 2 blocked; `--json`).
+- Claude: `worktree-cap.js` (PreToolUse `Bash|Agent|Task`: blocks `git worktree add` and `isolation=worktree` dispatch at cap, listing path/branch/commits-ahead/age), `unlanded-report.js` (SessionStart report for the repo at cwd and child repos; Stop **blocks** while a worktree holds a valid `.landing-ready` for its current HEAD and no non-empty `.landing-hold`). Worktrees with nothing ahead and 7d idle are listed `prunable`.
+- `landing-ready.js [worktree]`: the orchestrator calls this after independent review + audit PASS; writes `review: APPROVE <sha>` / `audit: PASS <sha>` (a later commit invalidates it).
+
+```bash
+cd worktree-cap
+node install.js                          # symlink only (INACTIVE)
+node install.js --wire                   # Claude: PreToolUse + SessionStart + Stop (ENFORCED)
+node install.js --codex [--project DIR]  # Codex: exec-policy rule forbids direct `git worktree add` (use cli.js add); AGENTS.md block
+node install.js --anvil DIR              # Anvil: .anvil/CONTRACTS.md block (ADVISORY: no native hook)
+node install.js --uninstall [--project DIR] [--anvil DIR]
+bash test-worktree-cap.sh                # 50 checks incl. one smoke per adapter
+```
+
+Enforcement: **Claude** hard (hooks). **Codex** hard for direct `git worktree add` via exec-policy, advisory for session report/Stop. **Anvil** advisory (instructions + `cli.js add` wrapper). Squash merges leave commits "ahead", so remove a worktree after landing (the block message says how).
 
 ### dispatch-gate
 
