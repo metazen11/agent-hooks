@@ -47,22 +47,30 @@ Before \`git worktree add\`, run \`node ${CLI} check <repo>\` (exit 2 = at cap: 
 
 const log = (m) => console.log(`  ${m}`);
 
+function blockRe(name) {
+    const esc = (t) => t.replace(/[()]/g, '\\$&');
+    return new RegExp(`${esc(START(name))}[\\s\\S]*?${esc(END(name))}\\n?`);
+}
+
+/** Idempotent: ensures EXACTLY the current block is present (replace in place or append), then reads it back. */
 function patchBlock(file, name, body) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const cur = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
-    if (cur.includes(START(name))) {
-        if (cur.includes(body)) { log(`· ${name} block already in ${file}`); return; }
-        stripBlock(file, name); // body changed since last install: refresh
-        return patchBlock(file, name, body);
-    }
-    fs.writeFileSync(file, `${cur}${cur && !cur.endsWith('\n') ? '\n' : ''}${START(name)}\n${body}\n${END(name)}\n`);
-    log(`✓ ${name} block added to ${file}`);
+    const block = `${START(name)}\n${body}\n${END(name)}\n`;
+    const m = cur.match(blockRe(name));
+    let next, verb;
+    if (!m) { next = `${cur}${cur && !cur.endsWith('\n') ? '\n' : ''}${block}`; verb = 'added'; }
+    else if (m[0] === block) { log(`· ${name} block already current in ${file}`); return; }
+    else { next = cur.replace(blockRe(name), () => block); verb = 'refreshed'; }
+    fs.writeFileSync(file, next);
+    if (!fs.readFileSync(file, 'utf8').includes(block)) throw new Error(`${name} block not present after write to ${file}`);
+    log(`✓ ${name} block ${verb} in ${file}`);
 }
 
 function stripBlock(file, name) {
     if (!fs.existsSync(file)) return;
     const cur = fs.readFileSync(file, 'utf8');
-    const re = new RegExp(`${START(name).replace(/[()]/g, '\\$&')}[\\s\\S]*?${END(name).replace(/[()]/g, '\\$&')}\\n?`);
+    const re = blockRe(name);
     if (!re.test(cur)) return;
     fs.writeFileSync(file, cur.replace(re, ''));
     log(`✓ ${name} block removed from ${file}`);
@@ -119,7 +127,9 @@ function uninstall(opts) {
 
 const a = process.argv.slice(2);
 const val = (flag) => { const i = a.indexOf(flag); return i >= 0 ? path.resolve(a[i + 1] || '.') : null; };
+const removeCodex = a.includes('--uncodex') || a.includes('--remove');
 const opts = { wire: a.includes('--wire'), codex: a.includes('--codex'), anvil: val('--anvil'), project: val('--project') };
-if (a.includes('--help') || a.includes('-h')) console.log('Usage: node install.js [--wire] [--codex [--project DIR]] [--anvil DIR] [--uninstall]');
+if (a.includes('--help') || a.includes('-h')) console.log('Usage: node install.js [--wire] [--codex [--project DIR]] [--anvil DIR] [--uninstall] [--uncodex|--remove]');
 else if (a.includes('--uninstall') || a.includes('-u')) uninstall(opts);
+else if (removeCodex) stripBlock(CODEX_RULES, 'codex');
 else install(opts);

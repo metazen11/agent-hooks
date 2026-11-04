@@ -122,7 +122,7 @@ node "$D/landing-ready.js" "$V" >/dev/null
 echo secret > "$T/target"; ln -s "$T/target" "$V/.landing-hold"
 node "$D/cli.js" stop "$T/v" >/dev/null 2>&1; eq $? 2 "symlinked hold not honoured -> still blocks"
 unlink "$V/.landing-hold"
-SHA=$(git -C "$V" rev-parse HEAD); K=$(ls "$T/state" | grep -v '^x$' | head -1)
+SHA=$(git -C "$V" rev-parse HEAD); K=$(basename "$(dirname "$(find "$T/state" -name "$SHA.attest" | head -1)")")
 unlink "$T/state/$K/$SHA.attest"; ln -s "$T/target" "$T/state/$K/$SHA.attest"
 node "$D/landing-ready.js" "$V" >/dev/null 2>&1; eq $? 1 "landing-ready refuses symlinked attestation path"
 [[ "$(cat "$T/target")" == secret ]]; ok $? "symlink target not overwritten"
@@ -158,6 +158,15 @@ grep -q 'worktree-cap-start (anvil)' "$T/proj/.anvil/CONTRACTS.md"; ok $? "anvil
 node -e 'const s=require(process.argv[1]);process.exit(["PreToolUse","SessionStart","Stop"].every(e=>s.hooks[e]&&s.hooks[e].length===1)?0:1)' "$H/.claude/settings.json"; ok $? "claude wired once each"
 HOME="$H" node "$D/install.js" --wire --codex --project "$T/proj" --anvil "$T/proj" >/dev/null
 eq "$(grep -c 'worktree-cap-start (codex)' "$H/.codex/rules/default.rules")" 1 "install idempotent"
+printf '# worktree-cap-start (codex)\n# worktree-cap-end (codex)\n' > "$H/.codex/rules/default.rules"
+HOME="$H" node "$D/install.js" --codex >/dev/null
+eq "$(grep -c 'prefix_rule' "$H/.codex/rules/default.rules")" 5 "empty marker block repaired to 5 rules"
+HOME="$H" node "$D/install.js" --codex >/dev/null; HOME="$H" node "$D/install.js" --wire --codex >/dev/null
+eq "$(grep -c 'prefix_rule' "$H/.codex/rules/default.rules")" 5 "consecutive installs keep 5 rules (no toggle)"
+eq "$(grep -c 'worktree-cap-start (codex)' "$H/.codex/rules/default.rules")" 1 "single block after re-runs"
+HOME="$H" node "$D/install.js" --uncodex >/dev/null
+eq "$(grep -c 'worktree-cap' "$H/.codex/rules/default.rules")" 0 "--uncodex removes block"
+HOME="$H" node "$D/install.js" --codex >/dev/null
 HOME="$H" node "$D/install.js" --uninstall --project "$T/proj" --anvil "$T/proj" >/dev/null
 ! grep -q worktree-cap "$H/.codex/rules/default.rules" "$T/proj/AGENTS.md" "$T/proj/.anvil/CONTRACTS.md" "$H/.claude/settings.json"; ok $? "uninstall removes everything"
 
