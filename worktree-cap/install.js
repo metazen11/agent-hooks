@@ -17,7 +17,7 @@ const os = require('os');
 
 const PACKAGE_DIR = __dirname;
 const HOME = os.homedir();
-const HOOK_FILES = ['lib.js', 'cli.js', 'worktree-cap.js', 'unlanded-report.js', 'landing-ready.js'];
+const HOOK_FILES = ['lib.js', 'cli.js', 'worktree-cap.js', 'unlanded-report.js', 'landing-ready.js', 'parse-git.js'];
 const HOOKS_DIR = path.join(HOME, '.claude', 'hooks');
 const SETTINGS = path.join(HOME, '.claude', 'settings.json');
 const CODEX_RULES = path.join(HOME, '.codex', 'rules', 'default.rules');
@@ -31,7 +31,16 @@ const CLAUDE_ENTRIES = [
 
 const START = (n) => `# worktree-cap-start (${n})`;
 const END = (n) => `# worktree-cap-end (${n})`;
-const CODEX_RULE = `prefix_rule(pattern=["git", "worktree", "add"], decision="forbidden", justification="worktree-cap: use 'node ${CLI} add <repo> <path> -b <branch>' (refuses at the unlanded-worktree cap)")`;
+const JUST = `worktree-cap: use 'node ${CLI} add <repo> <path> -b <branch>' (refuses at the unlanded-worktree cap)`;
+// Prefix rules can only match a fixed argv prefix, so forms with a free-form value before
+// `worktree` (`git -C <dir>`, `-c k=v`) cannot be expressed; those stay covered by the Claude hook only.
+const CODEX_RULE = [
+    ['git', 'worktree', 'add'],
+    ['git', '--no-pager', 'worktree', 'add'],
+    ['git', '-p', 'worktree', 'add'],
+    ['git', '--bare', 'worktree', 'add'],
+    ['git', '--no-replace-objects', 'worktree', 'add'],
+].map((pat) => `prefix_rule(pattern=${JSON.stringify(pat)}, decision="forbidden", justification=${JSON.stringify(JUST)})`).join('\n');
 const AGENT_TEXT = `## Worktree cap (worktree-cap)
 
 Before \`git worktree add\`, run \`node ${CLI} check <repo>\` (exit 2 = at cap: land with /reconcile or delete a worktree first), or create worktrees only via \`node ${CLI} add <repo> <path> -b <branch>\`. At session start run \`node ${CLI} report <dir>\`. After independent review+audit PASS run \`node ${path.join(PACKAGE_DIR, 'landing-ready.js')} <worktree>\`; before stopping run \`node ${CLI} stop <dir>\` (exit 2 = reviewed work not landed; land it or write <worktree>/.landing-hold with a reason).`;
@@ -41,7 +50,11 @@ const log = (m) => console.log(`  ${m}`);
 function patchBlock(file, name, body) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const cur = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
-    if (cur.includes(START(name))) { log(`· ${name} block already in ${file}`); return; }
+    if (cur.includes(START(name))) {
+        if (cur.includes(body)) { log(`· ${name} block already in ${file}`); return; }
+        stripBlock(file, name); // body changed since last install: refresh
+        return patchBlock(file, name, body);
+    }
     fs.writeFileSync(file, `${cur}${cur && !cur.endsWith('\n') ? '\n' : ''}${START(name)}\n${body}\n${END(name)}\n`);
     log(`✓ ${name} block added to ${file}`);
 }

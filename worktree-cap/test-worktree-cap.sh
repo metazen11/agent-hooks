@@ -5,6 +5,7 @@ D="$(cd "$(dirname "$0")" && pwd)"
 T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$T"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 unset WORKTREE_CAP WORKTREE_CAP_DISABLE
+export WORKTREE_CAP_STATE_DIR="$T/state"
 fails=0; n=0
 ok() { n=$((n+1)); if [[ "$1" == 0 ]]; then :; else fails=$((fails+1)); echo "FAIL: $2"; fi; }
 eq() { [[ "$1" == "$2" ]]; ok $? "$3 (got '$1', want '$2')"; }
@@ -68,8 +69,9 @@ newrepo s; unlanded "$T/s" s1; unlanded "$T/s" s2
 W="$T/s/.worktrees/s1"
 node "$D/cli.js" stop "$T/s" >/dev/null 2>&1; eq $? 0 "stop allows with no marker"
 node "$D/landing-ready.js" "$W" --evidence "reports: ok" >/dev/null; eq $? 0 "landing-ready writes marker"
-grep -q "^review: APPROVE $(git -C "$W" rev-parse HEAD)" "$W/.landing-ready"; ok $? "marker has review line for HEAD"
-[[ -z "$(git -C "$W" status --porcelain)" ]]; ok $? "marker excluded from git status"
+[[ ! -e "$W/.landing-ready" ]]; ok $? "attestation is NOT written inside the worktree"
+grep -rq "^review: APPROVE $(git -C "$W" rev-parse HEAD)" "$T/state"; ok $? "attestation stored in state dir for full HEAD"
+node "$D/landing-ready.js" "$W" >/dev/null; eq $? 0 "landing-ready idempotent (O_EXCL, already attested)"
 node "$D/landing-ready.js" "$T/s" >/dev/null 2>&1; eq $? 1 "landing-ready refuses main worktree"
 node "$D/cli.js" stop "$T/s" >/dev/null 2>&1; eq $? 2 "stop BLOCKS reviewed+audited unlanded"
 out=$(printf '{"cwd":"%s","hook_event_name":"Stop"}' "$T/s" | node "$D/unlanded-report.js")
@@ -81,7 +83,7 @@ echo "waiting on human review" > "$W/.landing-hold"; node "$D/cli.js" stop "$T/s
 rm "$W/.landing-hold"; git -C "$W" commit -q --allow-empty -m more
 node "$D/cli.js" stop "$T/s" >/dev/null 2>&1; eq $? 0 "marker stale after new commit (re-review needed)"
 out=$(printf '{"cwd":"%s","hook_event_name":"SessionStart"}' "$T/s" | node "$D/unlanded-report.js")
-has "$out" "SessionStart" "SessionStart emits context"; has "$out" "stale/invalid" "stale marker flagged"
+has "$out" "SessionStart" "SessionStart emits context"; hasnt "$out" "READY TO LAND" "stale attestation not labelled ready"
 
 # ── prunable: nothing ahead, idle 7d+ ──
 newrepo p; git -C "$T/p" worktree add -q -b old "$T/p/.worktrees/old" origin/main
@@ -98,10 +100,59 @@ eq "$(node "$D/cli.js" check "$T/p" --json | grep -o '"count":[0-9]*')" '"count"
 mkdir "$T/parent"; newrepo c1; mv "$T/c1" "$T/parent/c1"; unlanded "$T/parent/c1" k1
 out=$(node "$D/cli.js" report "$T/parent" 2>&1); has "$out" "k1" "report finds child repo worktrees"
 
+# ── security: self-attestation, sanitizing, fail-closed, symlinks, parser ──
+newrepo v; unlanded "$T/v" v1; V="$T/v/.worktrees/v1"; SHA=$(git -C "$V" rev-parse HEAD)
+printf 'review: APPROVE %s\naudit: PASS %s\n' "$SHA" "$SHA" > "$V/.landing-ready"
+node "$D/cli.js" stop "$T/v" >/dev/null 2>&1; eq $? 0 "in-worktree .landing-ready does NOT count as reviewed"
+out=$(node "$D/cli.js" report "$T/v" 2>&1); hasnt "$out" "READY TO LAND" "self-written marker not labelled reviewed"
+unlink "$V/.landing-ready"
+mkdir -p "$T/state/x"; printf 'review: APPROVE %s\naudit: PASS %s\n' "${SHA:0:10}" "${SHA:0:10}" > "$T/state/x/${SHA:0:10}.attest"
+node "$D/cli.js" stop "$T/v" >/dev/null 2>&1; eq $? 0 "short-sha attestation rejected (40 chars required)"
+printf 'ok\033[2J\033]0;pwn\007%0300d\n' 0 > "$V/.landing-hold"
+node "$D/landing-ready.js" "$V" >/dev/null
+out=$(node "$D/cli.js" report "$T/v" 2>&1)
+[[ "$out" != *$'\033'* ]]; ok $? "report strips escape chars from hold reason"
+[[ "$out" != *"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"* ]]; ok $? "hold reason truncated"
+git -C "$V" add -f .landing-hold; git -C "$V" commit -q -m "hold tracked"
+node "$D/cli.js" stop "$T/v" >/dev/null 2>&1; eq $? 0 "tracked .landing-hold: HEAD moved so attestation stale"
+node "$D/landing-ready.js" "$V" >/dev/null
+node "$D/cli.js" stop "$T/v" >/dev/null 2>&1; eq $? 2 "tracked .landing-hold NOT honoured -> blocks"
+git -C "$V" rm -q -f .landing-hold; git -C "$V" commit -q -m "untrack"
+node "$D/landing-ready.js" "$V" >/dev/null
+echo secret > "$T/target"; ln -s "$T/target" "$V/.landing-hold"
+node "$D/cli.js" stop "$T/v" >/dev/null 2>&1; eq $? 2 "symlinked hold not honoured -> still blocks"
+unlink "$V/.landing-hold"
+SHA=$(git -C "$V" rev-parse HEAD); K=$(ls "$T/state" | grep -v '^x$' | head -1)
+unlink "$T/state/$K/$SHA.attest"; ln -s "$T/target" "$T/state/$K/$SHA.attest"
+node "$D/landing-ready.js" "$V" >/dev/null 2>&1; eq $? 1 "landing-ready refuses symlinked attestation path"
+[[ "$(cat "$T/target")" == secret ]]; ok $? "symlink target not overwritten"
+unlink "$T/state/$K/$SHA.attest"
+WORKTREE_CAP_STATE_DIR="$T/v/st" node "$D/landing-ready.js" "$V" >/dev/null 2>&1; eq $? 1 "landing-ready refuses state dir inside repo"
+newrepo l; unlanded "$T/l" l1; echo 50 > "$T/capsrc"; ln -s "$T/capsrc" "$T/l/.worktree-cap"
+out=$(hook "$(bashj "$T/l" 'git worktree add .worktrees/n -b n')"); has "$out" '"deny"' "symlinked .worktree-cap -> deny"; has "$out" "not a regular file" "message names mechanism"
+eq "$(cat "$T/capsrc")" 50 "symlink target not rewritten"
+node "$D/cli.js" check "$T/l" >/dev/null 2>&1; eq $? 2 "cli check fails closed on symlinked cap file"
+unlink "$T/l/.worktree-cap"; printf 'SECRETPAYLOAD\n' > "$T/l/.worktree-cap"
+out=$(node "$D/cli.js" check "$T/l" 2>&1); hasnt "$out" SECRETPAYLOAD "cap file contents never echoed"
+eq "$(cap "$T/l")" 4 "garbage cap re-baselined to unlanded+3"
+newrepo z; unlanded "$T/z" z1; unlink "$T/z/.git/worktrees/z1/HEAD"
+out=$(node "$D/cli.js" check "$T/z" --json 2>&1); has "$out" '"count":1' "unreadable worktree counts as unlanded"
+out=$(node "$D/cli.js" report "$T/z" 2>&1); hasnt "$out" "prunable /" "unreadable worktree never prunable"
+newrepo g; unlanded "$T/g" g1; echo 1 > "$T/g/.worktree-cap"
+for c in "git -C $T/g worktree add x" "git -c core.x=1 -C $T/g worktree add x" "git --no-pager -C '$T/g' worktree add x" "git -C \"$T/g\" worktree add x" "cd $T/g && git worktree add x" "(cd $T/g; git worktree add x)" "echo hi; cd '$T/g' && git worktree add x" "git --git-dir=$T/g/.git worktree add x" "env FOO=1 git -C $T/g worktree add x" "bash -c 'cd $T/g && git worktree add x'" "sudo git -C $T/g worktree  add   x"; do
+  out=$(hook "$(bashj /tmp "$c")"); has "$out" '"deny"' "parser blocks: $c"
+done
+out=$(HOME="$T" hook "$(bashj /tmp "cd ~/g && git worktree add x")"); has "$out" '"deny"' "parser handles tilde"
+out=$(hook "$(bashj /tmp 'git -C $REPO worktree add x')"); has "$out" "cannot statically resolve" "unresolvable -C fails closed"
+out=$(hook "$(bashj /tmp 'cd $(pwd) && git worktree add x')"); has "$out" "cannot statically resolve" "dynamic cd fails closed"
+out=$(hook "$(bashj "$T/g" "echo 'git worktree add x'")"); eq "$out" "" "quoted text is not a command"
+out=$(hook "$(bashj "$T/g" 'git worktree list; git status')"); eq "$out" "" "other worktree subcommands allowed"
+
 # ── adapter smoke: Codex + Anvil via installer in scratch HOME/project ──
 H="$T/home"; mkdir -p "$H/.codex/rules" "$H/.claude" "$T/proj"; echo '{}' > "$H/.claude/settings.json"
 HOME="$H" node "$D/install.js" --wire --codex --project "$T/proj" --anvil "$T/proj" >/dev/null
 grep -q 'decision="forbidden"' "$H/.codex/rules/default.rules"; ok $? "codex rule installed"
+eq "$(grep -c 'prefix_rule' "$H/.codex/rules/default.rules")" 5 "codex rule covers git global-option variants"
 grep -q 'worktree-cap-start (codex-agents)' "$T/proj/AGENTS.md"; ok $? "codex AGENTS.md block"
 grep -q 'worktree-cap-start (anvil)' "$T/proj/.anvil/CONTRACTS.md"; ok $? "anvil CONTRACTS.md block"
 node -e 'const s=require(process.argv[1]);process.exit(["PreToolUse","SessionStart","Stop"].every(e=>s.hooks[e]&&s.hooks[e].length===1)?0:1)' "$H/.claude/settings.json"; ok $? "claude wired once each"

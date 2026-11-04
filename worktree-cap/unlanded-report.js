@@ -36,7 +36,7 @@ function reposUnder(cwd) {
 function run(input) {
     const scans = reposUnder(input.cwd || process.cwd()).map((r) => lib.scan(r));
     for (const s of scans) {
-        if (fs.existsSync(path.join(s.root, lib.CAP_FILE))) lib.resolveCap(s.root, s.unlanded.length);
+        if (fs.existsSync(path.join(s.root, lib.CAP_FILE))) { try { lib.resolveCap(s.root, s.unlanded.length); } catch (e) { process.stderr.write(`[unlanded-report] ${e.message}\n`); } }
     }
     const report = scans.map(lib.format).filter(Boolean).join('\n\n');
     const stop = input.hook_event_name === 'Stop';

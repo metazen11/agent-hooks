@@ -23,28 +23,45 @@
 const path = require('path');
 const lib = require('./lib');
 
-const GIT_WT_ADD = /\bgit\s+(?:-C\s+(\S+)\s+)?worktree\s+add\b/;
+const { worktreeAddTargets } = require('./parse-git');
 
-function decide(input) {
-    const tool = input.tool_name;
-    const ti = input.tool_input || {};
-    let cwd = input.cwd || process.cwd();
-    if (tool === 'Bash') {
-        const m = typeof ti.command === 'string' && ti.command.match(GIT_WT_ADD);
-        if (!m) return null;
-        if (m[1]) cwd = path.resolve(cwd, m[1]);
-    } else if (!((tool === 'Agent' || tool === 'Task') && ti.isolation === 'worktree')) {
-        return null;
-    }
-    const root = lib.repoRoot(cwd);
-    if (!root) return null;
-    const s = lib.scan(root);
-    const cap = lib.resolveCap(root, s.unlanded.length);
-    if (s.unlanded.length < cap) return null;
+function blockMsg(root, cap, s) {
     return `worktree-cap: ${s.unlanded.length} unlanded worktrees open, cap is ${cap}. Refusing to open another.\n\n` +
         lib.format(s) + '\n\n' +
         `NEXT STEP: land one with /reconcile (or delete it if abandoned) before creating a new worktree.\n` +
         `The cap only ratchets down as you clean up; to raise it deliberately edit ${path.join(root, lib.CAP_FILE)} or set WORKTREE_CAP=<n>.`;
+}
+
+function decide(input) {
+    const tool = input.tool_name;
+    const ti = input.tool_input || {};
+    const cwd = input.cwd || process.cwd();
+    let targets;
+    if (tool === 'Bash') {
+        if (typeof ti.command !== 'string') return null;
+        const r = worktreeAddTargets(ti.command, cwd);
+        if (!r.targets.length) return null;
+        if (r.unresolved) {
+            return 'worktree-cap: cannot statically resolve which repo this `git worktree add` targets ($VAR, backticks or $(...) in -C/cd path). Failing closed: use a literal path, or `cli.js add <repo> ...`.';
+        }
+        targets = r.targets;
+    } else if ((tool === 'Agent' || tool === 'Task') && ti.isolation === 'worktree') {
+        targets = [cwd];
+    } else {
+        return null;
+    }
+    for (const t of new Set(targets)) {
+        const root = lib.repoRoot(t);
+        if (!root) continue;
+        const s = lib.scan(root);
+        let cap;
+        try { cap = lib.resolveCap(root, s.unlanded.length); } catch (e) {
+            if (e instanceof lib.CapFileError) return `worktree-cap: ${e.message}`;
+            throw e;
+        }
+        if (s.unlanded.length >= cap) return blockMsg(root, cap, s);
+    }
+    return null;
 }
 
 function main() {

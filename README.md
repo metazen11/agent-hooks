@@ -254,7 +254,7 @@ Deterministic guard against "reviewed work that never lands". Caps the number of
 
 - `cli.js check|report|stop <dir>`, `cli.js add <repo> <git worktree add args>`: the host-agnostic core (exit 0 ok, 2 blocked; `--json`).
 - Claude: `worktree-cap.js` (PreToolUse `Bash|Agent|Task`: blocks `git worktree add` and `isolation=worktree` dispatch at cap, listing path/branch/commits-ahead/age), `unlanded-report.js` (SessionStart report for the repo at cwd and child repos; Stop **blocks** while a worktree holds a valid `.landing-ready` for its current HEAD and no non-empty `.landing-hold`). Worktrees with nothing ahead and 7d idle are listed `prunable`.
-- `landing-ready.js [worktree]`: the orchestrator calls this after independent review + audit PASS; writes `review: APPROVE <sha>` / `audit: PASS <sha>` (a later commit invalidates it).
+- `landing-ready.js [worktree]`: the orchestrator calls this after independent review + audit PASS; writes the attestation (`review: APPROVE <sha40>` / `audit: PASS <sha40>`) OUTSIDE every worktree (`WORKTREE_CAP_STATE_DIR` or `~/.claude/worktree-cap`, O_EXCL|O_NOFOLLOW); a `.landing-ready` file inside a worktree is ignored, and a later commit invalidates the attestation. `.landing-hold` must be a regular, untracked file; its first line is sanitized and truncated before display. `.worktree-cap` must be a regular file (a symlink fails closed). Codex rules only match fixed argv prefixes, so `git -C <dir> worktree add` is covered by the Claude hook, not Codex.
 
 ```bash
 cd worktree-cap
@@ -263,7 +263,7 @@ node install.js --wire                   # Claude: PreToolUse + SessionStart + S
 node install.js --codex [--project DIR]  # Codex: exec-policy rule forbids direct `git worktree add` (use cli.js add); AGENTS.md block
 node install.js --anvil DIR              # Anvil: .anvil/CONTRACTS.md block (ADVISORY: no native hook)
 node install.js --uninstall [--project DIR] [--anvil DIR]
-bash test-worktree-cap.sh                # 50 checks incl. one smoke per adapter
+bash test-worktree-cap.sh                # 87 checks incl. one smoke per adapter
 ```
 
 Enforcement: **Claude** hard (hooks). **Codex** hard for direct `git worktree add` via exec-policy, advisory for session report/Stop. **Anvil** advisory (instructions + `cli.js add` wrapper). Squash merges leave commits "ahead", so remove a worktree after landing (the block message says how).

@@ -22,7 +22,11 @@ function checkRepo(repoArg, capOverride) {
     if (!root) return { error: `not a git repository: ${repoArg}`, exit: 1 };
     const s = lib.scan(root);
     if (capOverride) process.env.WORKTREE_CAP = String(capOverride);
-    const cap = lib.resolveCap(root, s.unlanded.length);
+    let cap;
+    try { cap = lib.resolveCap(root, s.unlanded.length); } catch (e) {
+        if (e instanceof lib.CapFileError) return { error: e.message, exit: 2 };
+        throw e;
+    }
     const blocked = s.unlanded.length >= cap;
     return { root, cap, count: s.unlanded.length, blocked, scan: s, exit: blocked ? 2 : 0 };
 }
@@ -58,7 +62,7 @@ function main(argv) {
         case 'report': {
             const scans = reposUnder(path.resolve(target)).map((root) => {
                 const s = lib.scan(root);
-                if (require('fs').existsSync(path.join(root, lib.CAP_FILE))) s.cap = lib.resolveCap(root, s.unlanded.length);
+                if (require('fs').existsSync(path.join(root, lib.CAP_FILE))) { try { s.cap = lib.resolveCap(root, s.unlanded.length); } catch (e) { console.error(e.message); } }
                 return s;
             });
             if (json) console.log(JSON.stringify(scans));
