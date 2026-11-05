@@ -4,6 +4,8 @@
 set -uo pipefail
 cd "$(dirname "$0")"; HOOK=$PWD/self-update.js
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+# Throttle state lives under $HOME/.claude/state: keep it out of the real home.
+export HOME="$TMP/home"; mkdir -p "$HOME"
 pass=0; fail=0
 ok(){ printf '  ✓  %s\n' "$1"; pass=$((pass+1)); }
 no(){ printf '  ✗  %s\n' "$1"; fail=$((fail+1)); }
