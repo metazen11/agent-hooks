@@ -44,5 +44,10 @@ check allow "find '$ROOT/repo/.claude/worktrees/agent-1' -name temp -print0 | xa
 check allow $'true && cat > note.md <<\x27EOF\x27\nrm '$ROOT'/repo/main/out.txt\nEOF'
 check deny $'cat x; bash <<\x27EOF\x27\nrm '$ROOT'/repo/main/out.txt\nEOF'
 check deny $'true && cat <<\x27EOF\x27\nprose\nEOF\nrm '$ROOT'/repo/main/out.txt'
-check deny $'bash -s $(true; true) cat <<\x27EOF\x27\nrm '$ROOT'/repo/main/out.txt\nEOF'
+# Owner not provable from the line: the body stays visible, fail closed.
+doc=$'<<\x27EOF\x27\nrm '$ROOT$'/repo/main/out.txt\nEOF'
+for owner in 'bash -s $(true; echo ) cat' 'bash -s `true; echo ` cat' 'bash -s a\; cat' 'bash -s >| cat' 'true # && cat'; do
+  check deny "$owner $doc"
+done
+check deny "echo \$(bash $doc"$'\n)'
 echo "3 command-parsing cases passed"

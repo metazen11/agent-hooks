@@ -272,7 +272,7 @@ function stripNonExecutableHereDocs(command) {
         }
         const marker = hereDocMarker(line);
         if (marker) {
-            const before = line.slice(0, marker.index).trim();
+            const before = line.slice(marker.cmdStart, marker.index).trim();
             const first = before.split(/\s+/)[0];
             const executablePipeline = /\|\s*(?:env\s+)?(?:[\w.-]+\/|\/[^\s|;&]+\/|\/)?(?:bash|sh|zsh|node)\b/.test(line);
             if (['cat', 'echo', 'printf', 'tee'].includes(first) && !executablePipeline) {
@@ -285,13 +285,23 @@ function stripNonExecutableHereDocs(command) {
     return out.join('\n');
 }
 
+// cmdStart = where the simple command that the heredoc feeds begins: after the
+// last top-level `;`, `&`, `|` (not the redirects `>&`, `<&`, `>|`). Returns null
+// (body stays visible, fail closed) when that owner cannot be read off the line:
+// backticks, a comment, a separator inside (...)/{...}, or `<<` inside a group.
 function hereDocMarker(line) {
-    let quote = null;
+    let quote = null, cmdStart = 0, depth = 0;
     for (let i = 0; i < line.length - 1; i++) {
         const ch = line[i];
         if (quote) { if (ch === quote && line[i - 1] !== '\\') quote = null; continue; }
         if (ch === "'" || ch === '"') { quote = ch; continue; }
+        if (ch === '\\') { i++; continue; }
+        if (ch === '`' || (ch === '#' && !/\S/.test(line[i - 1] || ' '))) return null;
+        if (ch === '(' || ch === '{') depth++;
+        else if (ch === ')' || ch === '}') depth--;
+        else if (/[;&|]/.test(ch) && !/[<>]/.test(line[i - 1])) { if (depth) return null; cmdStart = i + 1; }
         if (ch !== '<' || line[i + 1] !== '<') continue;
+        if (depth) return null;
         let j = i + 2;
         if (line[j] === '-') j++;
         while (/\s/.test(line[j] || '')) j++;
@@ -304,7 +314,7 @@ function hereDocMarker(line) {
             while (/[A-Za-z0-9_.-]/.test(line[j] || '')) j++;
         }
         if (j === start) return null;
-        return { index: i, delimiter: line.slice(start, j), quoted: !!q };
+        return { index: i, cmdStart, delimiter: line.slice(start, j), quoted: !!q };
     }
     return null;
 }

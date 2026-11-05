@@ -30,9 +30,9 @@ deny $'cat <<END-DOC\nprose\nEND-DOC\ngit push origin main'
 deny $'cat <<\x27END DOC\x27\nprose\nEND DOC\ngit push origin main'
 # Issue #51: a heredoc feeds the LAST simple command before `<<`, not the first
 # word of the line. Quoted bodies are inert wherever that command sits in a chain.
-note=$'cat > a.md <<\x27EOF\x27\nThe same `gh pr create` was refused once.\ngit push origin main\nEOF'
-for sep in '&&' '||' ';' '|'; do allow "true $sep $note"; done
-allow "mkdir -p \$(dirname a/b) 2>&1 && $note"
+note=$'<<\x27EOF\x27\nThe same `gh pr create` was refused once.\ngit push origin main\nEOF'
+for sep in '&&' '||' ';' '|'; do allow "true $sep cat > a.md $note"; done
+allow "mkdir -p \$(dirname a/b) && cat > \${PWD}/a.md 2>&1 $note"
 # ...and a shell later in the chain still executes its heredoc, whatever precedes it.
 doc=$'<<\x27EOF\x27\ngit push origin main\nEOF'
 for owner in 'cat x; bash' 'cat x && bash' 'echo hi & sh' 'true && bash'; do deny "$owner $doc"; done
@@ -41,7 +41,7 @@ deny $'true && cat <<\x27EOF\x27\nprose\nEOF\ngit push origin main'
 deny $'true && cat <<EOF\n$(git push origin main)\nEOF'
 # Owner not provable from the line (group, substitution, escape, redirect,
 # comment): the body stays visible, fail closed.
-for owner in 'bash -s $(true; true) cat' '(bash; cat )' 'bash -s `true; true` cat' \
+for owner in 'bash -s $(true; echo ) cat' '(bash; cat )' 'bash -s `true; echo ` cat' \
     'bash -s a\; cat' 'bash -s >| cat' 'true # && cat' 'echo { ; bash -s } cat' 'eval $(true; cat'; do
     deny "$owner $doc"
 done
