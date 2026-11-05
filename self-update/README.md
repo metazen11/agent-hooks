@@ -23,8 +23,8 @@ Restart Claude Code afterwards. Node only, no dependencies.
 ```json
 {
   "repos": [
-    { "slug": "agent-hooks",  "path": "~/_CODING/hooks",      "branch": "dev" },
-    { "slug": "agent-memory", "path": "~/_CODING/agentMemory", "branch": "dev" }
+    { "slug": "agent-hooks",  "path": "~/_CODING/hooks",      "branch": "main" },
+    { "slug": "agent-memory", "path": "~/_CODING/agentMemory", "branch": "main" }
   ]
 }
 ```
