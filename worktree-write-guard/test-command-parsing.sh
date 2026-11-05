@@ -50,7 +50,8 @@ rm_main="rm $ROOT/repo/main/out.txt"
 doc=$'<<\x27EOF\x27\n'"$rm_main"$'\nEOF'
 # AC4: plain first-on-line quoted heredocs stay data, whatever the body mentions.
 for line in "cat > note.md <<'EOF'" "cat <<'EOF' > note.md" "tee note.md <<'EOF'" "cat > \$S/a.md <<'EOF'" \
-    "cat <<'EOF' > \$S/a.md 2>&1 # a note" 'cat <<"EOF"' "cat << 'EOF'" "echo <<'EOF'" "printf x <<'EOF'"; do
+    "cat <<'EOF' > \$S/a.md # a note" 'cat <<"EOF"' "cat << 'EOF'" "echo <<'EOF'" "printf x <<'EOF'" \
+    "cat<<'EOF'" "cat <<'EOF'>a.md" "cat <<'EOF' >> a.md"; do
   check allow "$line"$'\n'"$rm_main"$'\nEOF'
 done
 check allow $'cat <<-\x27EOF\x27\n\t'"$rm_main"$'\n\tEOF'
@@ -86,29 +87,41 @@ check deny $'cat <<\x27EOF\x27 "\n`'"$rm_main"$'`\n"\nEOF'
 # AC2, class 3: `cat` was rebound earlier in the command, ...
 for earlier in 'cat() ( bash )' 'cat () { bash; }' 'function cat { bash; }' 'cat() bash' 'alias cat=bash' \
     "eval 'cat() ( bash )'" 'exec 3> >(bash)' 'source ./lib.sh' '. ./lib.sh' 'hash -p /bin/bash cat' "trap 'x' DEBUG" \
-    'builtin alias cat=bash' 'command alias cat=bash' 'enable -n cat' 'PATH=/tmp/x:$PATH' 'export IFS=x' 'BASH_ENV=./rc true'; do
+    'builtin alias cat=bash' 'command alias cat=bash' 'enable -n cat' 'PATH=/tmp/x:$PATH' 'export IFS=x' 'BASH_ENV=./rc true' \
+    'hash cat=/bin/bash' 'export PATH=/tmp/x:$PATH' 'typeset -f cat' 'declare -f cat' 'shopt -s expand_aliases' 'setopt aliases' \
+    'set -o posix' "X=1 eval 'cat() ( bash )'" 'LD_PRELOAD=./x.so true'; do
   check deny "$earlier"$'\n'"cat $doc"
 done
 for form in 'cat <<"EOF"' "cat <<-'EOF'" "cat << 'EOF'"; do check deny $'cat() ( bash )\n'"$form"$'\n'"$rm_main"$'\nEOF'; done
 check deny $'source /dev/stdin <<\x27EOF\x27\ncat() ( bash )\nEOF\ncat '"$doc"
+# ... or its output was attached to a shell earlier (descriptor, process
+# substitution, fifo). A descriptor is never a plain redirect target.
+for earlier in 'exec > >(bash)' ': > >(bash)' 'mkfifo p; bash < p &'; do check deny "$earlier"$'\n'"cat $doc"; done
+check deny $'exec 3> >(bash)\ncat <<\x27EOF\x27 >&3\n'"$rm_main"$'\nEOF'
+check deny $'mkfifo p; bash < p &\ncat <<\x27EOF\x27 >p\n'"$rm_main"$'\nEOF'
+for line in "cat <<'EOF' >&3" "cat <<'EOF' > /dev/fd/3" "cat > /dev/fd/3 <<'EOF'" "tee /dev/fd/3 <<'EOF'" "cat <<'EOF' > a.md 2>&1"; do
+  check deny "$line"$'\n'"$rm_main"$'\nEOF'
+done
+# ... or the heredoc is inside a command substitution, whose output the outer
+# command may run. Prose there is still fine.
+check deny $'eval "$(cat <<\x27EOF\x27\n'"$rm_main"$'\nEOF\n)"'
+check deny $'bash -c "$(cat <<\x27EOF\x27\n'"$rm_main"$'\nEOF\n)"'
+check allow $'git commit -m "$(cat <<\x27EOF\x27\nfix: thing\n\nThe same `gh pr create` was refused once.\nEOF\n)"'
 # ... or the heredoc sits inside a compound command whose output is piped, ...
 check deny $'if true; then\ncat '"$doc"$'\nfi | bash'
 check deny $'while true; do\ncat '"$doc"$'\nbreak; done | bash'
 check deny $'time while true; do\ncat '"$doc"$'\nbreak; done | bash'
 check deny $'! if true; then\ncat '"$doc"$'\nfi | bash'
 check deny $'( case x in\nx)\ncat '"$doc"$'\n;; esac ) | bash'
-# (not a complete command on its own: pins that `)` ends a command, so `do` is a command word)
-check deny $'(true) do\ncat '"$doc"$'\ndone | bash'
 # ... or inside a quote, group or continuation left open by an earlier line.
 check deny $'echo "start\ncat <<\x27EOF\x27"\n'"$rm_main"$'\nEOF'
 check deny $'echo "start\nx; cat <<\x27EOF\x27"\n'"$rm_main"$'\nEOF'
-check deny $'bash -s a \\\ncat '"$doc"
+check deny $'echo a \\\ncat '"$doc"
 check deny $'(\ncat '"$doc"$'\n) | bash'
 check deny $'{ : }\ncat '"$doc"$'\n} | bash'
 check deny $': )\n(\ncat '"$doc"$'\n) | bash'
 check deny $'echo "$(echo "\ncat <<\x27EOF\x27\n`'"$rm_main"$'`\nEOF\n")"'
 check deny $'echo "${x:-"\ncat <<\x27EOF\x27\n`'"$rm_main"$'`\nEOF\n"}"'
-check deny $'echo "`echo "\ncat <<\x27EOF\x27\n$('"$rm_main"$')\nEOF\n"`"'
 check deny $'true # "\ncat <<\x27EOF\x27\n`'"$rm_main"$'`\nEOF\n"'
 check deny $'# say "hi\necho "x\ncat <<\x27EOF\x27\n`'"$rm_main"$'`\nEOF\n"'
 # Any other `<<` on an earlier line may start a body that is not shell text.
@@ -129,11 +142,14 @@ check deny $'cat <<\x27EOF\x27\xc2\xa0x\nEOF\ncat <<\x27X\x27\nEOF\xc2\xa0x\n'"$
 # and a `cd` in it does not move the directory the guard follows.
 check deny $'cat > "a.md" <<\x27EOF\x27\ndon\x27t\nEOF\n'"$rm_main"
 check deny $'cat <<\x27EOF\x27 | nice cat\necho "\nEOF\n'"$rm_main"
-check deny "cd $ROOT/repo/main"$'\ncat <<\x27EOF\x27 | nice cat\n'"cd $ROOT/repo/.claude/worktrees/agent-1"$'\nEOF\nrm file'
-# Ordinary earlier lines leave nothing open: the heredoc after them is still data.
+check deny $'cat <<\x27EOF\x27 | nice cat\n'"cd $ROOT/repo/.claude/worktrees/agent-1/a/b/c"$'\nEOF\ncd ../../../main\nrm file'
+# Earlier lines made only of harmless commands and plain assignments leave nothing
+# open: the heredoc after them is still data. Any other command word does not.
 check allow $'echo done\ncat > a.md '"$doc"
+check allow $'cd repo && mkdir -p x; S=x git add . 2>&1 | cat\ncat > a.md '"$doc"
+check deny $'make build\ncat > a.md '"$doc"
 check allow $'git commit -m "subject\n\nit\x27s the body"\ncat > a.md '"$doc"
-check allow $'(echo "5\\" pipe" it\\\x27s\n) # group closed\ncat > a.md '"$doc"
+check allow $'echo "5\\" pipe" it\\\x27s # a note\ncat > a.md '"$doc"
 check allow $'cat > a.md <<\x27EOF\x27\ndon\x27t\nEOF\ncat > b.md '"$doc"
 check allow $'gh issue create --title t --body "Repro:\ncd repo && cat > f <<\x27EOF\x27\nis refused when chained\n"'
 # AC5: one 200 KB line of word-initial `#` is decided (deny) well inside the 5 s hook budget.

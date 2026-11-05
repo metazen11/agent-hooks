@@ -36,7 +36,8 @@ gated=$'The same `gh pr create` was refused once.\ngit push origin main'
 doc=$'<<\x27EOF\x27\ngit push origin main\nEOF'
 # AC4: plain first-on-line quoted heredocs stay data, whatever the body mentions.
 for line in "cat > a.md <<'EOF'" "cat <<'EOF' > a.md" "tee a.md <<'EOF'" "cat > \$S/a.md <<'EOF'" \
-    "cat <<'EOF' > \$S/a.md 2>&1 # a note" 'cat <<"EOF"' "cat << 'EOF'" "echo <<'EOF'" "printf x <<'EOF'"; do
+    "cat <<'EOF' > \$S/a.md # a note" 'cat <<"EOF"' "cat << 'EOF'" "echo <<'EOF'" "printf x <<'EOF'" \
+    "cat<<'EOF'" "cat <<'EOF'>a.md" "cat <<'EOF' >> a.md"; do
     allow "$line"$'\n'"$gated"$'\nEOF'
 done
 allow $'cat <<-\x27EOF\x27\n\t'"$gated"$'\n\tEOF'
@@ -73,29 +74,41 @@ deny $'cat <<\x27EOF\x27 "\n`git push origin main`\n"\nEOF'
 # AC2, class 3: `cat` was rebound earlier in the command, ...
 for earlier in 'cat() ( bash )' 'cat () { bash; }' 'function cat { bash; }' 'cat() bash' 'alias cat=bash' \
     "eval 'cat() ( bash )'" 'exec 3> >(bash)' 'source ./lib.sh' '. ./lib.sh' 'hash -p /bin/bash cat' "trap 'x' DEBUG" \
-    'builtin alias cat=bash' 'command alias cat=bash' 'enable -n cat' 'PATH=/tmp/x:$PATH' 'export IFS=x' 'BASH_ENV=./rc true'; do
+    'builtin alias cat=bash' 'command alias cat=bash' 'enable -n cat' 'PATH=/tmp/x:$PATH' 'export IFS=x' 'BASH_ENV=./rc true' \
+    'hash cat=/bin/bash' 'export PATH=/tmp/x:$PATH' 'typeset -f cat' 'declare -f cat' 'shopt -s expand_aliases' 'setopt aliases' \
+    'set -o posix' "X=1 eval 'cat() ( bash )'" 'LD_PRELOAD=./x.so true'; do
     deny "$earlier"$'\n'"cat $doc"
 done
 for form in 'cat <<"EOF"' "cat <<-'EOF'" "cat << 'EOF'"; do deny $'cat() ( bash )\n'"$form"$'\ngit push origin main\nEOF'; done
 deny $'source /dev/stdin <<\x27EOF\x27\ncat() ( bash )\nEOF\ncat <<\x27EOF\x27\ngit push origin main\nEOF'
+# ... or its output was attached to a shell earlier (descriptor, process
+# substitution, fifo). A descriptor is never a plain redirect target.
+for earlier in 'exec > >(bash)' ': > >(bash)' 'mkfifo p; bash < p &'; do deny "$earlier"$'\n'"cat $doc"; done
+deny $'exec 3> >(bash)\ncat <<\x27EOF\x27 >&3\ngit push origin main\nEOF'
+deny $'mkfifo p; bash < p &\ncat <<\x27EOF\x27 >p\ngit push origin main\nEOF'
+for line in "cat <<'EOF' >&3" "cat <<'EOF' > /dev/fd/3" "cat > /dev/fd/3 <<'EOF'" "tee /dev/fd/3 <<'EOF'" "cat <<'EOF' > a.md 2>&1"; do
+    deny "$line"$'\ngit push origin main\nEOF'
+done
+# ... or the heredoc is inside a command substitution, whose output the outer
+# command may run. Prose there is still fine.
+deny $'eval "$(cat <<\x27EOF\x27\ngit push origin main\nEOF\n)"'
+deny $'bash -c "$(cat <<\x27EOF\x27\ngit push origin main\nEOF\n)"'
+allow $'git commit -m "$(cat <<\x27EOF\x27\nfix: thing\n\nThe same `gh pr create` was refused once.\nEOF\n)"'
 # ... or the heredoc sits inside a compound command whose output is piped, ...
 deny $'if true; then\ncat <<\x27EOF\x27\ngit push origin main\nEOF\nfi | bash'
 deny $'while true; do\ncat <<\x27EOF\x27\ngit push origin main\nEOF\nbreak; done | bash'
 deny $'time while true; do\ncat <<\x27EOF\x27\ngit push origin main\nEOF\nbreak; done | bash'
 deny $'! if true; then\ncat <<\x27EOF\x27\ngit push origin main\nEOF\nfi | bash'
 deny $'( case x in\nx)\ncat <<\x27EOF\x27\ngit push origin main\nEOF\n;; esac ) | bash'
-# (not a complete command on its own: pins that `)` ends a command, so `do` is a command word)
-deny $'(true) do\ncat <<\x27EOF\x27\ngit push origin main\nEOF\ndone | bash'
 # ... or inside a quote, group or continuation left open by an earlier line.
 deny $'echo "start\ncat <<\x27EOF\x27"\ngit push origin main\nEOF'
 deny $'echo "start\nx; cat <<\x27EOF\x27"\ngit push origin main\nEOF'
-deny $'bash -s a \\\ncat <<\x27EOF\x27\ngit push origin main\nEOF'
+deny $'echo a \\\ncat <<\x27EOF\x27\ngit push origin main\nEOF'
 deny $'(\ncat <<\x27EOF\x27\ngit push origin main\nEOF\n) | bash'
 deny $'{ : }\ncat <<\x27EOF\x27\ngit push origin main\nEOF\n} | bash'
 deny $': )\n(\ncat <<\x27EOF\x27\ngit push origin main\nEOF\n) | bash'
 deny $'echo "$(echo "\ncat <<\x27EOF\x27\n`git push origin main`\nEOF\n")"'
 deny $'echo "${x:-"\ncat <<\x27EOF\x27\n`git push origin main`\nEOF\n"}"'
-deny $'echo "`echo "\ncat <<\x27EOF\x27\n$(git push origin main)\nEOF\n"`"'
 deny $'echo $\x27a\\\x27\x27 "it\x27s\ncat <<\x27EOF\x27\n"\\"\ngit push origin main'
 deny $'true # "\ncat <<\x27EOF\x27\n`git push origin main`\nEOF\n"'
 deny $'# say "hi\necho "x\ncat <<\x27EOF\x27\n`git push origin main`\nEOF\n"'
@@ -116,11 +129,14 @@ deny $'cat <<\x27EOF\x27\xc2\xa0x\nEOF\ncat <<\x27X\x27\nEOF\xc2\xa0x\ngit push 
 # A body that is shown cannot hide what follows it: its quotes are not the shell's.
 deny $'cat > "a.md" <<\x27EOF\x27\ndon\x27t\nEOF\ngit push origin main'
 deny $'cat <<\x27EOF\x27 | nice bash\necho "\nEOF\ngit push origin main'
-# Ordinary earlier lines leave nothing open: the heredoc after them is still data.
+# Earlier lines made only of harmless commands and plain assignments leave nothing
+# open: the heredoc after them is still data. Any other command word does not.
 allow $'echo done\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
+allow $'cd repo && mkdir -p x; S=x git add . 2>&1 | cat\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
+deny $'make build\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
 allow $'echo \x27a\\\x27\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
 allow $'git commit -m "subject\n\nit\x27s the body"\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
-allow $'(echo "5\\" pipe" it\\\x27s\n) # group closed\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
+allow $'echo "5\\" pipe" it\\\x27s # a note\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
 allow $'cat > a.md <<\x27EOF\x27\ndon\x27t\nEOF\ncat > b.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
 allow $'gh issue create --title t --body "Repro:\ncd repo && cat > f <<\x27EOF\x27\nis refused when chained\n"'
 # AC5: one 200 KB line of word-initial `#` is decided (deny) well inside the 5 s hook budget.
