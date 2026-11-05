@@ -174,8 +174,24 @@ success "Naming conventions check complete"
 #######################################
 info "Checking for test verification..."
 
+# Prefer the project's own venv (main checkout's when in a linked worktree):
+# a pytest found on PATH lacks the project's plugins and rejects its addopts.
+resolve_pytest() {
+  local common
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
+  local candidate
+  for candidate in ".venv/bin/pytest" "${common%/.git}/.venv/bin/pytest"; do
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  command -v pytest || true
+}
+PYTEST=$(resolve_pytest)
+
 # Check if pytest is available and tests exist
-if command -v pytest >/dev/null 2>&1; then
+if [[ -n "$PYTEST" ]]; then
   if [[ -d "tests" ]]; then
     # Run quick tests for changed files only
     TEST_FILES=""
@@ -188,7 +204,7 @@ if command -v pytest >/dev/null 2>&1; then
 
     if [[ -n "$TEST_FILES" ]]; then
       info "Running related tests..."
-      if ! pytest $TEST_FILES -q --tb=no 2>/dev/null; then
+      if ! "$PYTEST" $TEST_FILES -q --tb=no 2>/dev/null; then
         fail "Tests failed - fix before committing"
         ERRORS=$((ERRORS + 1))
       else
