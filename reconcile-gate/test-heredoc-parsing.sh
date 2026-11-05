@@ -145,6 +145,17 @@ allow $'git commit -m "subject\n\nit\x27s the body"\ncat > a.md <<\x27EOF\x27\n'
 allow $'echo "5\\" pipe" it\\\x27s # a note\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
 allow $'cat > a.md <<\x27EOF\x27\ndon\x27t\nEOF\ncat > b.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
 allow $'gh issue create --title t --body "Repro:\ncd repo && cat > f <<\x27EOF\x27\nis refused when chained\n"'
+# Whether a body is data is a property of the call, not of the process: the same
+# command stripped twice in one process gives the same result, and only a call
+# marked as a command-substitution body shows it. (The hook runs main() on load
+# and exports nothing, so the unit is read from the source file.)
+node -e 'const fs = require("fs"), vm = require("vm");
+const src = fs.readFileSync(process.argv[1], "utf8");
+const unit = src.slice(src.indexOf("// A quoted note passed to"), src.indexOf("\n}\n", src.indexOf("function shellState(")) + 3);
+const strip = vm.runInNewContext(unit + "; stripNonExecutableHereDocs");
+const q = String.fromCharCode(39), command = "cat > a.md <<" + q + "EOF" + q + "\nBODY\nEOF";
+const first = strip(command), second = strip(command), nested = strip(command, true);
+if (first !== second || first.includes("BODY") || !nested.includes("BODY")) { console.log("FAIL strip twice in one process: " + JSON.stringify([first, second, nested])); process.exit(1); }' "$HOOK" || fails=$((fails + 1))
 # AC5: one 200 KB line of word-initial `#` is decided (deny) well inside the 5 s hook budget.
 node -e 'const { spawnSync } = require("child_process");
 const command = "echo x " + " #".repeat(100000) + "\ngit push origin main";
