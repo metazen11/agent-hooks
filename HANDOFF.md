@@ -7,7 +7,7 @@
 - `contracts/pull-and-update.sh` exited 2 on every run: it `cd`'d into `contracts/` before `install.js --all`, and the installer refuses its own package directory as the target project. It now stays at the repo root. Regression test: `contracts/test-pull-and-update.sh`.
 - The `contracts`, `plan-refiner` and `pre-commit-hook` installers are run from the project being installed into (`node ~/_CODING/hooks/<pkg>/install.js ...`), never after `cd <pkg>`. READMEs and SKILL.md files say so.
 - Node suites (`*/test.js`, `*/tests/*.test.js`) now run in CI through `test-node-suites.sh`, which discovers them; a new suite needs no registration.
-- Root `install.sh` deleted (it installed into the parent directory's `.git/hooks`). Use `pre-commit-hook/install.js --agent=git`.
+- Root `install.sh` is now a thin wrapper around `pre-commit-hook/install.js --agent=git` for the repo it is run from. Its own logic, which installed every top-level file into the parent directory's `.git/hooks`, is gone.
 - `self-update/repos.json` watches `main` for `agent-hooks` and `agent-memory`. `.gitignore` covers `.env`, `.env.*` (not `.env.example`) and `.worktrees/`.
 
 ## 2026-10-25 - git-session never pushes (#33)

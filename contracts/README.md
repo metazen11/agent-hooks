@@ -117,7 +117,7 @@ To add a mechanical check for the new section:
 Two scripts (currently being built in parallel) keep the contract in sync across every project that has it installed:
 
 - **`update-check.js`** — compares the installed contract version against the source repo and warns if the local copy is stale.
-- **`pull-and-update.sh`** — pulls the latest contract from the source repo and re-runs `install.js` for every agent that already had it installed.
+- **`pull-and-update.sh`** — pulls the latest contract from the source repo and re-runs `install.js --all`, which installs for every agent detected on the machine, whether or not it had the hook before.
 
 Run these opportunistically; both are non-destructive and idempotent.
 

@@ -41,15 +41,21 @@ Run from the repo that should get the `pre-commit` quality checks:
 
 ```bash
 node ~/_CODING/hooks/pre-commit-hook/install.js --agent=git
+~/_CODING/hooks/install.sh     # short form of the same command
 ```
+
+Inside a clone of this repo the short form is `./install.sh`, which installs
+into that clone. `install.sh` only delegates to the installer above and passes
+extra arguments through (e.g. `--uninstall`).
 
 This symlinks that repo's `.git/hooks/pre-commit` to the [`pre-commit`](pre-commit)
 script here, first copying any existing hook to
 `pre-commit.pre-commit-backup-<timestamp>`; `--uninstall --agent=git` removes
-the symlink. It writes to `.git/hooks` only, so it has no effect in a repo that
-sets `core.hooksPath` — this repo does (`.githooks`, see
-[CONTRIBUTING.md](CONTRIBUTING.md)) — or in a linked worktree, where `.git` is
-a file.
+the symlink. It writes to `.git/hooks` only, so it has no effect in a repo
+where `core.hooksPath` is set, or in a linked worktree, where `.git` is a file.
+A fresh clone of this repo has no `core.hooksPath`; once the setup step in
+[CONTRIBUTING.md](CONTRIBUTING.md) has pointed it at `.githooks`, git no longer
+runs hooks from `.git/hooks` there.
 
 ## Branching contract
 
