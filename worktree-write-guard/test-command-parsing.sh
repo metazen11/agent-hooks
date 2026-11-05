@@ -102,6 +102,7 @@ for pre in '' 'true && '; do
   check deny "${pre}cat <<'EOF' | \\"$'\n'"$rm_main"$'\nEOF\nbash'
   check deny "${pre}cat <<'EOF' | xargs rm -f"$'\n'"$ROOT/repo/main/out.txt"$'\nEOF'
 done
+check deny "true && cat <<'EOF' # | bash"$'\n'"$rm_main"$'\nEOF'
 check allow "true && cat <<'EOF' > \$S/a.md 2>&1 # a note"$'\n'"$rm_main"$'\nEOF'
 # A command name rebound earlier in the command (function, alias) makes `cat` mean
 # anything, so nothing is recognised after one.
@@ -116,6 +117,8 @@ check deny $'cat <<\x27EOF\x27\n  EOF\ncat <<\x27X\x27\nEOF\n'"$rm_main"$'\nX'
 check deny $'true && cat <<\x27EOF\x27\n  EOF\ntrue && cat <<\x27X\x27\nEOF\n'"$rm_main"$'\nX'
 check deny $'cat <<\x27EOF\x27\nEOF \ncat <<\x27X\x27\nEOF\n'"$rm_main"$'\nX'
 check deny $'true && cat <<-\x27EOF\x27\n \tEOF\ncat <<\x27X\x27\nEOF\n'"$rm_main"$'\nX'
+check deny $'cat <<\x27EOF\x272>&1\nEOF\ncat <<\x27X\x27\nEOF2\n'"$rm_main"$'\nX'
+check deny $': )\n(\ncat '"$doc"$'\n) | bash'
 check deny $'cat <<\x27EOF\x27\r\nEOF\ncat <<\x27X\x27\nEOF\r\n'"$rm_main"$'\nX'
 check deny $'cat <<\x27EOF\x27\xc2\xa0x\nEOF\ncat <<\x27X\x27\nEOF\xc2\xa0x\n'"$rm_main"$'\nX'
 check deny $'true && cat <<-\x27EOF\x27\n\tprose\n\tEOF\n'"$rm_main"
@@ -125,6 +128,7 @@ check deny $'if true; then\ncat '"$doc"$'\nfi | bash'
 check deny $'while true; do\ncat '"$doc"$'\nbreak; done | bash'
 check deny $'for x in 1; do true; cat '"$doc"$'\ndone | bash'
 check deny $'( case x in\nx)\ncat '"$doc"$'\n;; esac ) | bash'
+check allow $'echo done\ntrue && cat > a.md '"$doc"
 # A leading assignment is not stripped: PATH=... changes what `cat` resolves to.
 check deny "true && X=1 cat $doc"
 # One 200 KB line of word-initial `#` is decided (deny) well inside the 5 s hook budget.

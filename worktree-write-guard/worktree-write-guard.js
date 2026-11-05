@@ -259,71 +259,80 @@ function splitShellSegments(command) {
     return segments;
 }
 
-// A quoted note passed to `cat <<EOF` is data, not a second shell program.
-// Keep executable heredocs (bash/sh/zsh/node) visible to the normal parser.
-// Recognising a heredoc is an allowlist (hereDocMarker); every other `<<` leaves
-// its body visible to the normal parser, which is the fail-closed direction.
+// A quoted note passed to `cat <<EOF` is data, not a second shell program. Only
+// such inert heredocs are recognised (hereDocMarker is an allowlist) and their
+// body dropped. Every other `<<` leaves its body visible to the normal parser,
+// which is the fail-closed direction.
 function stripNonExecutableHereDocs(cmd) {
     const lines = String(cmd || '').split('\n');
     const out = [];
-    let delimiter = null;
-    let inert = false;
-    // What earlier visible lines left open; a heredoc is recognised only on a
-    // line that starts with nothing open. Heredoc bodies are not shell text
-    // and never feed this.
+    let doc = null; // the inert heredoc whose body is being dropped
+    // What earlier visible lines left open or unknowable. A heredoc is recognised
+    // only on a line that starts with nothing open.
     let state = NOTHING_OPEN;
     for (const line of lines) {
-        if (delimiter) {
-            if (line.trim() === delimiter) delimiter = null;
-            else if (!inert) out.push(line);
+        if (doc) {
+            // The shell ends the body at the delimiter exactly; `<<-` strips leading tabs.
+            if ((doc.tabs ? line.replace(/^\t+/, '') : line) === doc.delimiter) doc = null;
             continue;
         }
-        const marker = state === NOTHING_OPEN ? hereDocMarker(line) : null;
-        if (marker) {
-            const executablePipeline = /\|\s*(?:env\s+)?(?:[\w.-]+\/|\/[^\s|;&]+\/|\/)?(?:bash|sh|zsh|node)\b/.test(line);
-            delimiter = marker.delimiter;
-            inert = marker.quoted && ['cat', 'echo', 'printf', 'tee'].includes(marker.owner) && !executablePipeline;
-        } else {
-            state = shellState(line + '\n', state);
-        }
+        doc = state === NOTHING_OPEN ? hereDocMarker(line) : null;
+        if (!doc) state = shellState(line + '\n', state);
         out.push(line);
     }
     return out.join('\n');
 }
 
-// Allowlist: the only line recognised is `<plain text> << <delimiter word> <rest>`.
-// Plain text has no quote, backslash, backtick, parenthesis, brace or `#`, so every
-// `;` `&` `|` in it that is not glued to a redirect (`>&`, `<&`, `>|`, zsh `>>|`)
-// ends a command and the heredoc feeds the last one: `owner` is its first word.
-// `&>` is split too, because POSIX sh reads it as `&` then `>`. The rest of the
-// line must leave nothing open. Anything else returns null.
+// Allowlist. The one line recognised is
+//   <plain text> <<[-] '<delimiter>' [redirections to plain words] [# plain comment]
+// - Plain text has no quote, backslash, backtick, parenthesis, brace or `#`, and
+//   no word that wraps or rebinds commands (shellState). Then every `;` `&` `|`
+//   in it that is not glued to a redirect (`>&`, `<&`, `>|`, zsh `>>|`) ends a
+//   command and the heredoc feeds the last one, which must be cat/echo/printf/tee
+//   as written: no wrapper, no leading assignment (PATH=... changes what `cat`
+//   is). `&>` is split too, because POSIX sh reads it as `&` then `>`.
+// - The delimiter is quoted and ends where the shell ends a word.
+// - Nothing after it can hand the body on: no pipe, no further command, no
+//   process substitution.
+// Anything else returns null.
+const INERT_REST = /^(?:[ \t]|\d*(?:>>?|>&|>\|)[ \t]*[\w.\/$~+@%,:=-]+(?=[ \t]|$))*(?:#[\w \t.\/$~+@%,:=-]*)?$/;
 function hereDocMarker(line) {
     const index = line.indexOf('<<');
     if (index === -1) return null;
     const prefix = line.slice(0, index);
-    const m = /^<<-?[ \t]*(?:'([^']+)'|"([^"\\$`]+)"|([A-Za-z0-9_.-]+))(?![^\s;&|<>])/.exec(line.slice(index));
-    if (!m || /['"\\`(){}#]/.test(prefix)) return null;
-    if (shellState(line.slice(index + m[0].length) + '\n', NOTHING_OPEN) !== NOTHING_OPEN) return null;
+    const m = /^<<(-?)[ \t]*(?:'([^']+)'|"([^"\\$`]+)")(?![^ \t;&|<>])/.exec(line.slice(index));
+    if (!m || !INERT_REST.test(line.slice(index + m[0].length))) return null;
+    if (/['"\\`(){}#]/.test(prefix) || shellState(prefix + '\n', NOTHING_OPEN) !== NOTHING_OPEN) return null;
     const owner = prefix.replace(/[<>]+[&|]*/g, '>').split(/[;&|]/).pop().trim().split(/[\s>]/)[0];
-    return { owner, delimiter: m[1] || m[2] || m[3], quoted: !m[3] };
+    return ['cat', 'echo', 'printf', 'tee'].includes(owner) ? { delimiter: m[2] || m[3], tabs: m[1] === '-' } : null;
 }
 
 // Shell state after `text` (whole lines, each ending in \n) when it starts in
 // `state`: NOTHING_OPEN, or { quote, depth } while a quote, parentheses or a line
 // continuation (trailing backslash) is open, or UNKNOWN. '..' and ".." are read
-// exactly as the shell reads them; whatever cannot be read exactly is UNKNOWN for
-// good: a backtick, $'..', `$(` inside double quotes, a brace outside `${NAME}`,
-// an unmatched `)`, a `<<` (what follows may be a heredoc body, not shell text)
-// and a `#` comment containing any of these.
+// exactly as the shell reads them. Whatever cannot be read exactly, or changes
+// what a later command means, is UNKNOWN for good: a backtick, $'..', `$(` inside
+// double quotes, a brace outside `${NAME}`, an unmatched `)`, a `<<` (what
+// follows may be a heredoc body, not shell text), a `#` comment containing any of
+// these, a function definition `name()`, and a command word that wraps other
+// commands (their output can be piped as a whole) or rebinds a name.
 const NOTHING_OPEN = null;
 const UNKNOWN = false;
+const WRAPS_OR_REBINDS = /(?:if|then|else|elif|fi|while|until|for|foreach|repeat|do|done|case|esac|select|coproc|function|alias)(?![^\s;&|()<>])/y;
+const EMPTY_PARENS = /\([ \t]*\)/y;
 function shellState(text, state) {
     if (state === UNKNOWN) return UNKNOWN;
     let { quote, depth } = state || { quote: null, depth: 0 };
     let continues = false;
+    let command = true; // the next word is a command word
     for (let i = 0; i < text.length; i++) {
         const ch = text[i];
         if (quote === "'") { if (ch === "'") quote = null; continue; }
+        if (!quote) {
+            WRAPS_OR_REBINDS.lastIndex = EMPTY_PARENS.lastIndex = i;
+            if ((command && WRAPS_OR_REBINDS.test(text)) || EMPTY_PARENS.test(text)) return UNKNOWN;
+            command = /[\n;&|(]/.test(ch) || (command && (ch === ' ' || ch === '\t'));
+        }
         if (ch === '\\') { continues = ++i === text.length - 1; continue; }
         if (ch === '`' || (ch === '$' && text[i + 1] === "'")) return UNKNOWN;
         if (text.startsWith('<<', i)) { if (text[i + 2] !== '<') return UNKNOWN; i += 2; continue; }
@@ -341,9 +350,12 @@ function shellState(text, state) {
         } else if (ch === '(') {
             depth++;
         } else if (ch === '#' && (i === 0 || /[\s;&|()<>]/.test(text[i - 1]))) {
-            // A comment, unless the shell is interactive: fine only when the rest
-            // of the line reads the same either way.
-            if (/^[^\n]*(?:['"\\`(){}]|<<)/.test(text.slice(i))) return UNKNOWN;
+            // A comment, unless the shell is interactive: skip it only when the
+            // rest of the line reads the same either way.
+            let end = text.indexOf('\n', i);
+            if (end === -1) end = text.length;
+            if (/['"\\`(){}]|<</.test(text.slice(i, end))) return UNKNOWN;
+            i = end - 1;
         }
     }
     return quote === null && depth === 0 && !continues ? NOTHING_OPEN : { quote, depth };

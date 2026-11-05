@@ -94,6 +94,7 @@ for pre in '' 'true && '; do
     deny "${pre}cat <<'EOF' |"$'\ngit push origin main\nEOF\nbash'
     deny "${pre}cat <<'EOF' | \\"$'\ngit push origin main\nEOF\nbash'
 done
+deny "true && cat <<'EOF' # | bash"$'\ngit push origin main\nEOF'
 allow "true && cat <<'EOF' > \$S/a.md 2>&1 # a note"$'\n'"$gated"$'\nEOF'
 # A command name rebound earlier in the command (function, alias) makes `cat` mean
 # anything, so nothing is recognised after one.
@@ -108,6 +109,8 @@ deny $'cat <<\x27EOF\x27\n  EOF\ncat <<\x27X\x27\nEOF\ngit push origin main\nX'
 deny $'true && cat <<\x27EOF\x27\n  EOF\ntrue && cat <<\x27X\x27\nEOF\ngit push origin main\nX'
 deny $'cat <<\x27EOF\x27\nEOF \ncat <<\x27X\x27\nEOF\ngit push origin main\nX'
 deny $'true && cat <<-\x27EOF\x27\n \tEOF\ncat <<\x27X\x27\nEOF\ngit push origin main\nX'
+deny $'cat <<\x27EOF\x272>&1\nEOF\ncat <<\x27X\x27\nEOF2\ngit push origin main\nX'
+deny $': )\n(\ncat <<\x27EOF\x27\ngit push origin main\nEOF\n) | bash'
 deny $'cat <<\x27EOF\x27\r\nEOF\ncat <<\x27X\x27\nEOF\r\ngit push origin main\nX'
 deny $'cat <<\x27EOF\x27\xc2\xa0x\nEOF\ncat <<\x27X\x27\nEOF\xc2\xa0x\ngit push origin main\nX'
 deny $'true && cat <<-\x27EOF\x27\n\tprose\n\tEOF\ngit push origin main'
@@ -117,6 +120,7 @@ deny $'if true; then\ncat <<\x27EOF\x27\ngit push origin main\nEOF\nfi | bash'
 deny $'while true; do\ncat <<\x27EOF\x27\ngit push origin main\nEOF\nbreak; done | bash'
 deny $'for x in 1; do true; cat <<\x27EOF\x27\ngit push origin main\nEOF\ndone | bash'
 deny $'( case x in\nx)\ncat <<\x27EOF\x27\ngit push origin main\nEOF\n;; esac ) | bash'
+allow $'echo done\ntrue && cat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
 # A leading assignment is not stripped: PATH=... changes what `cat` resolves to.
 deny $'true && X=1 cat <<\x27EOF\x27\ngit push origin main\nEOF'
 # One 200 KB line of word-initial `#` is decided (deny) well inside the 5 s hook budget.
