@@ -346,7 +346,9 @@ Never blocks; always exits 0; degrades to silence on any failure.
 
 Tells you when watched repos have new commits upstream. **Notify-only** — it
 fetches read-only and prints the exact `git merge --ff-only` command; it does
-not merge on its own.
+not merge on its own. A checkout that lacks commits from `origin/<branch>` is
+reported whatever branch it is on (`git-session` parks it on `work/session-*`)
+and with a dirty tree; there it gets the count and the reason, not a command.
 
 Even with an explicit `--apply` it is fast-forward only, and refuses on a
 dirty tree, wrong branch, missing upstream, diverged history, or an
@@ -357,7 +359,7 @@ in-progress rebase/merge/bisect.
 - Throttle: `SELF_UPDATE_EVERY_HOURS` (default 24; `0` = always check)
 - Install: `node self-update/install.js [--hours N]`
 - Manual: `node self-update/self-update.js --check | --apply --now`
-- Tests: `./self-update/test-self-update.sh` (14 cases)
+- Tests: `./self-update/test-self-update.sh` (35 cases)
 
 ### memory-context (legacy)
 

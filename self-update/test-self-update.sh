@@ -4,6 +4,8 @@
 set -uo pipefail
 cd "$(dirname "$0")"; HOOK=$PWD/self-update.js
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+# Throttle state lives under $HOME/.claude/state: keep it out of the real home.
+export HOME="$TMP/home"; mkdir -p "$HOME"
 pass=0; fail=0
 ok(){ printf '  ✓  %s\n' "$1"; pass=$((pass+1)); }
 no(){ printf '  ✗  %s\n' "$1"; fail=$((fail+1)); }
@@ -56,10 +58,75 @@ chk "diverged refused"         "$(RUN --apply --now | grep -c 'diverged')" 1
 chk "  local commit survived"  "$(HEAD_OF)" "$B"
 git -C "$TMP/w" reset -q --hard HEAD~1
 
+# #44: NOTIFY answers "does this checkout lack commits that are on
+# origin/<branch>?" whatever is checked out — git-session parks every checkout
+# on work/session-*. It reports and never modifies; --apply still refuses.
+SNAP(){ git -C "$TMP/w" rev-parse --abbrev-ref HEAD; HEAD_OF; git -C "$TMP/w" status --porcelain; git -C "$TMP/w" stash list; }
+NOTE(){ echo "$out" | grep -c "^- fx: 1 new commit on origin/dev; $1"; }
+
+echo "notify whatever is checked out (#44):"
+WB=work/session-fixture
+git -C "$TMP/w" checkout -qb "$WB"
+echo wip > "$TMP/w/wip.txt"; git -C "$TMP/w" add .; git -C "$TMP/w" commit -qm wip
+B=$(SNAP); out=$(RUN --session-start)
+chk "work branch + behind reported"  "$(NOTE "on '$WB', not 'dev'")" 1
+chk "  no merge command offered"     "$(echo "$out" | grep -c 'merge --ff-only')" 0
+chk "  repo untouched"               "$(SNAP)" "$B"
+chk "--apply on work branch refused" "$(RUN --apply --now | grep -c "not 'dev'")" 1
+chk "  repo untouched"               "$(SNAP)" "$B"
+
+git -C "$TMP/w" merge -q --no-edit origin/dev   # work branch now holds all of origin/dev
+chk "work branch + up to date: checked, current" "$(RUN | grep -c '^  current  *fx ')" 1
+chk "  silent in hook mode"          "$(RUN --session-start)" ""
+git -C "$TMP/w" checkout -q dev
+
+echo dirty >> "$TMP/w/f.txt"; B=$(SNAP); out=$(RUN --session-start)
+chk "dirty + behind reported"        "$(NOTE '1 uncommitted change')" 1
+chk "  no merge command offered"     "$(echo "$out" | grep -c 'merge --ff-only')" 0
+chk "  HEAD, branch, tree untouched" "$(SNAP)" "$B"
+chk "  local edit survived"          "$(grep -c dirty "$TMP/w/f.txt")" 1
+git -C "$TMP/w" checkout -q -- f.txt
+
+echo local > "$TMP/w/l.txt"; git -C "$TMP/w" add .; git -C "$TMP/w" commit -qm local
+B=$(SNAP); out=$(RUN --session-start)
+chk "diverged + behind reported"     "$(NOTE 'diverged')" 1
+chk "  no merge command offered"     "$(echo "$out" | grep -c 'merge --ff-only')" 0
+chk "  local commit survived"        "$(SNAP)" "$B"
+git -C "$TMP/w" reset -q --hard HEAD~1
+
+touch "$TMP/w/.git/MERGE_HEAD"; B=$(SNAP)
+chk "in-progress op: notify silent"  "$(RUN --session-start)" ""
+chk "  --apply refused"              "$(RUN --apply --now | grep -c 'MERGE_HEAD in progress')" 1
+rm -f "$TMP/w/.git/MERGE_HEAD"
+chk "  repo untouched"               "$(SNAP)" "$B"
+
 echo "apply (the one safe case):"
 B=$(HEAD_OF); RUN --apply --now >/dev/null
 [ "$(HEAD_OF)" != "$B" ] && ok "fast-forwarded when clean+behind" || no "should have advanced"
 chk "  content correct"        "$(tr -d '\n' < "$TMP/w/f.txt")" "v1v2"
+
+# The remote's refspec need not cover the configured branch (single-branch
+# clone, narrowed refspec): a plain `git fetch origin` then leaves origin/dev
+# stale and the checkout looks current. Last, because it advances the remote.
+echo "off-branch fetch refreshes origin/<branch> itself (#44):"
+mkdir "$TMP/sb"; cp "$HOOK" "$TMP/sb/self-update.js"
+git clone -q "$TMP/remote.git" "$TMP/sb/w" 2>/dev/null
+git -C "$TMP/sb/w" checkout -q --no-track -b work/sb origin/dev
+git -C "$TMP/sb/w" config remote.origin.fetch '+refs/heads/work/*:refs/remotes/origin/work/*'
+( cd "$TMP/up"; echo v3 >> f.txt; git commit -qam v3; git tag t3; git push -q origin dev t3 )
+cat > "$TMP/sb/repos.json" <<JSON
+{"repos":[{"slug":"sb","path":"$TMP/sb/w","branch":"dev"},
+          {"slug":"nb","path":"$TMP/sb/w","branch":"nope"}]}
+JSON
+RUNSB(){ ( cd "$TMP/sb" && SELF_UPDATE_EVERY_HOURS=0 node self-update.js "$@" 2>&1 ); }
+# Everything the hook may NOT change: every ref but origin/dev (tags included), HEAD, tree.
+REST(){ git -C "$TMP/sb/w" for-each-ref | grep -v 'refs/remotes/origin/dev$'
+        git -C "$TMP/sb/w" rev-parse --abbrev-ref HEAD; git -C "$TMP/sb/w" status --porcelain; }
+B=$(REST); out=$(RUNSB --session-start)
+chk "narrowed refspec + behind reported"   "$(echo "$out" | grep -c "^- sb: 1 new commit on origin/dev; on 'work/sb', not 'dev'")" 1
+chk "  only origin/dev was written"        "$(REST)" "$B"
+chk "  branch missing on origin: silent"   "$(echo "$out" | grep -c '^- nb:')" 0
+chk "  ...and named in manual mode"        "$(RUNSB | grep -c '^  skipped  *nb  *cannot fetch origin/nope')" 1
 
 echo "────────────────────────────────"; echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

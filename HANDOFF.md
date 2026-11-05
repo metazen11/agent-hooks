@@ -2,6 +2,14 @@
 
 **Last updated:** 2026-11-05
 
+## 2026-11-05 - self-update reports off-branch (#44)
+
+- Root cause of self-update never reporting: `inspectRepo` returned `skipped` before fetching whenever HEAD was not the configured branch (and again on a dirty tree), and `git-session --session-start` moves every checkout onto `work/session-<date>`. With both hooks installed no watched repo could ever be "behind".
+- Notify mode now asks "does HEAD lack commits that are on `origin/<branch>`" whatever is checked out. Off-branch, dirty or diverged it reports the count and the reason and offers no command; only on-branch, clean and not diverged gets the `git merge --ff-only` line. The fetch is still the only side effect. An in-progress rebase/merge/bisect is still neither fetched nor reported.
+- Off-branch the fetch names the ref it compares with (`+refs/heads/<branch>:refs/remotes/origin/<branch>`, `--no-tags`), because origin's configured refspec need not cover the branch (single-branch clone) and a plain `git fetch origin` then left `origin/<branch>` stale and the checkout "current". On-branch fetching is unchanged.
+- `--apply` is unchanged: fast-forward only, same refusals, same messages. Test: `self-update/test-self-update.sh` (35 cases).
+- **Open follow-up:** `--check` still reads the current branch's upstream, so off-branch it prints `no upstream` and no cached counts.
+
 ## 2026-11-05 - installer/updater defects (#43)
 
 - `contracts/pull-and-update.sh` exited 2 on every run: it `cd`'d into `contracts/` before `install.js --all`, and the installer refuses its own package directory as the target project. It now stays at the repo root. Regression test: `contracts/test-pull-and-update.sh`.
