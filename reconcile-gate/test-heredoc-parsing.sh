@@ -64,7 +64,7 @@ deny "X=1 cat $doc"
 for tail in '| nice bash' '| command bash' '| nohup bash' '| sudo bash' '|& bash' '> >(bash)' \
     '| xargs -0 bash -c' '| source /dev/stdin' '| . /dev/stdin' '| (bash)' '| exec bash' '| eval $(cat)' \
     "| python3 -c 'import os,sys;os.system(sys.stdin.read())'" '| while read l; do eval "$l"; done' \
-    '| tee /dev/null | bash' '> /dev/stdout | bash' '> x.sh; bash x.sh' '> x.sh && sh x.sh' '# | bash' '>| bash'; do
+    '| tee /dev/null | bash' '> /dev/stdout | bash' '> x.sh; bash x.sh' '> x.sh && sh x.sh' '# | bash' '# | nice bash' '>| bash'; do
     for pre in '' 'true && '; do deny "${pre}cat <<'EOF' $tail"$'\ngit push origin main\nEOF'; done
 done
 deny "tee x.sh <<'EOF' >/dev/null; . ./x.sh"$'\ngit push origin main\nEOF'
@@ -107,6 +107,7 @@ deny $'echo a \\\ncat <<\x27EOF\x27\ngit push origin main\nEOF'
 for op in '&&' '||' '|' '|&'; do deny "true $op"$'\n'"cat $doc"; done
 deny $'(\ncat <<\x27EOF\x27\ngit push origin main\nEOF\n) | bash'
 deny $'{ : }\ncat <<\x27EOF\x27\ngit push origin main\nEOF\n} | bash'
+deny "true &&"$'\n\n'"cat $doc"
 deny $': )\n(\ncat <<\x27EOF\x27\ngit push origin main\nEOF\n) | bash'
 deny $'echo "$(echo "\ncat <<\x27EOF\x27\n`git push origin main`\nEOF\n")"'
 deny $'echo "${x:-"\ncat <<\x27EOF\x27\n`git push origin main`\nEOF\n"}"'
@@ -124,6 +125,7 @@ deny $'cat <<\x27EOF\x27\nEOF \ncat <<\x27X\x27\nEOF\ngit push origin main\nX'
 deny $'cat <<-\x27EOF\x27\n \tEOF\ncat <<\x27X\x27\nEOF\ngit push origin main\nX'
 deny $'cat <<-\x27EOF\x27\n\tprose\n\tEOF\ngit push origin main'
 deny $'cat <<\x27EO\x27F\nprose\nEOF\ngit push origin main\nEO'
+deny $'cat <<\x27EOF\x27#x\nEOF\ncat <<\x27X\x27\nEOF#x\ngit push origin main\nX'
 deny $'cat <<\x27EOF\x272>&1\nEOF\ncat <<\x27X\x27\nEOF2\ngit push origin main\nX'
 deny $'cat <<\x27EOF\x27\r\nEOF\ncat <<\x27X\x27\nEOF\r\ngit push origin main\nX'
 deny $'cat <<\x27EOF\x27\xc2\xa0x\nEOF\ncat <<\x27X\x27\nEOF\xc2\xa0x\ngit push origin main\nX'
@@ -132,8 +134,11 @@ deny $'cat > "a.md" <<\x27EOF\x27\ndon\x27t\nEOF\ngit push origin main'
 deny $'cat <<\x27EOF\x27 | nice bash\necho "\nEOF\ngit push origin main'
 # Earlier lines made only of harmless commands and plain assignments leave nothing
 # open: the heredoc after them is still data. Any other command word does not.
+allow $'# step one\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
+allow $'cat <<-\x27EOF\x27\n\tx\n\tEOF\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
 allow $'echo done\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
 allow $'cd repo && mkdir -p x; S=x git add . 2>&1 | cat\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
+deny $'make build\necho ok\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
 deny $'make build\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
 allow $'echo \x27a\\\x27\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
 allow $'git commit -m "subject\n\nit\x27s the body"\ncat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'

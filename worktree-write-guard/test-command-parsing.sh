@@ -76,7 +76,7 @@ check deny "X=1 cat $doc"
 for tail in '| nice bash' '| command bash' '| nohup bash' '| sudo bash' '|& bash' '> >(bash)' \
     '| xargs -0 bash -c' '| source /dev/stdin' '| . /dev/stdin' '| (bash)' '| exec bash' '| eval $(cat)' \
     "| python3 -c 'import os,sys;os.system(sys.stdin.read())'" '| while read l; do eval "$l"; done' \
-    '| tee /dev/null | bash' '> /dev/stdout | bash' '> x.sh; bash x.sh' '> x.sh && sh x.sh' '# | bash' '>| bash'; do
+    '| tee /dev/null | bash' '> /dev/stdout | bash' '> x.sh; bash x.sh' '> x.sh && sh x.sh' '# | bash' '# | nice bash' '>| bash'; do
   for pre in '' 'true && '; do check deny "${pre}cat <<'EOF' $tail"$'\n'"$rm_main"$'\nEOF'; done
 done
 check deny "tee x.sh <<'EOF' >/dev/null; . ./x.sh"$'\n'"$rm_main"$'\nEOF'
@@ -120,9 +120,11 @@ check deny $'echo a \\\ncat '"$doc"
 for op in '&&' '||' '|' '|&'; do check deny "true $op"$'\n'"cat $doc"; done
 check deny $'(\ncat '"$doc"$'\n) | bash'
 check deny $'{ : }\ncat '"$doc"$'\n} | bash'
+check deny "true &&"$'\n\n'"cat $doc"
 check deny $': )\n(\ncat '"$doc"$'\n) | bash'
 check deny $'echo "$(echo "\ncat <<\x27EOF\x27\n`'"$rm_main"$'`\nEOF\n")"'
 check deny $'echo "${x:-"\ncat <<\x27EOF\x27\n`'"$rm_main"$'`\nEOF\n"}"'
+check deny $'echo $\x27a\\\x27\x27 "it\x27s\ncat <<\x27EOF\x27\n"\\"\n'"$rm_main"
 check deny $'true # "\ncat <<\x27EOF\x27\n`'"$rm_main"$'`\nEOF\n"'
 check deny $'# say "hi\necho "x\ncat <<\x27EOF\x27\n`'"$rm_main"$'`\nEOF\n"'
 # Any other `<<` on an earlier line may start a body that is not shell text.
@@ -136,6 +138,7 @@ check deny $'cat <<\x27EOF\x27\nEOF \ncat <<\x27X\x27\nEOF\n'"$rm_main"$'\nX'
 check deny $'cat <<-\x27EOF\x27\n \tEOF\ncat <<\x27X\x27\nEOF\n'"$rm_main"$'\nX'
 check deny $'cat <<-\x27EOF\x27\n\tprose\n\tEOF\n'"$rm_main"
 check deny $'cat <<\x27EO\x27F\nprose\nEOF\n'"$rm_main"$'\nEO'
+check deny $'cat <<\x27EOF\x27#x\nEOF\ncat <<\x27X\x27\nEOF#x\n'"$rm_main"$'\nX'
 check deny $'cat <<\x27EOF\x272>&1\nEOF\ncat <<\x27X\x27\nEOF2\n'"$rm_main"$'\nX'
 check deny $'cat <<\x27EOF\x27\r\nEOF\ncat <<\x27X\x27\nEOF\r\n'"$rm_main"$'\nX'
 check deny $'cat <<\x27EOF\x27\xc2\xa0x\nEOF\ncat <<\x27X\x27\nEOF\xc2\xa0x\n'"$rm_main"$'\nX'
@@ -146,8 +149,12 @@ check deny $'cat <<\x27EOF\x27 | nice cat\necho "\nEOF\n'"$rm_main"
 check deny $'cat <<\x27EOF\x27 | nice cat\n'"cd $ROOT/repo/.claude/worktrees/agent-1/a/b/c"$'\nEOF\ncd ../../../main\nrm file'
 # Earlier lines made only of harmless commands and plain assignments leave nothing
 # open: the heredoc after them is still data. Any other command word does not.
+check allow $'# step one\ncat > a.md '"$doc"
+check allow $'cat <<-\x27EOF\x27\n\tx\n\tEOF\ncat > a.md '"$doc"
+check allow $'echo \x27a\\\x27\ncat > a.md '"$doc"
 check allow $'echo done\ncat > a.md '"$doc"
 check allow $'cd repo && mkdir -p x; S=x git add . 2>&1 | cat\ncat > a.md '"$doc"
+check deny $'make build\necho ok\ncat > a.md '"$doc"
 check deny $'make build\ncat > a.md '"$doc"
 check allow $'git commit -m "subject\n\nit\x27s the body"\ncat > a.md '"$doc"
 check allow $'echo "5\\" pipe" it\\\x27s # a note\ncat > a.md '"$doc"
