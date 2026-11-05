@@ -22,29 +22,33 @@ If either exists, the hook exits immediately.
 
 ## Installation
 
+Run the installer from the project being installed into (or pass
+`--project=/path/to/repo`). It refuses to run from inside this package
+directory, because the per-agent instruction files belong in the consuming
+project.
+
 ### Interactive wizard
 
 ```bash
-cd plan-refiner
-node install.js
+node ~/_CODING/hooks/plan-refiner/install.js
 ```
 
 ### Specific agents
 
 ```bash
-node install.js --agent=claude,anvil
+node ~/_CODING/hooks/plan-refiner/install.js --agent=claude,anvil
 ```
 
 ### All detected agents
 
 ```bash
-node install.js --all
+node ~/_CODING/hooks/plan-refiner/install.js --all
 ```
 
 ### Uninstall
 
 ```bash
-node install.js --uninstall
+node ~/_CODING/hooks/plan-refiner/install.js --uninstall
 ```
 
 ## Per-agent strategy

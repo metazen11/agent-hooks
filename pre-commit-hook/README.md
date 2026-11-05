@@ -14,24 +14,28 @@ Runs 5 quality checks on staged files before every commit:
 
 ## Installation
 
+Run the installer from the project being installed into (or pass
+`--project=/path/to/repo`). It refuses to run from inside this package
+directory, because the per-agent instruction files belong in the consuming
+project.
+
 ### Interactive wizard
 
 ```bash
-cd pre-commit-hook
-node install.js
+node ~/_CODING/hooks/pre-commit-hook/install.js
 ```
 
 ### Specific agents
 
 ```bash
-node install.js --agent=claude,git
-node install.js --agent=codex,gemini --project=/path/to/repo
+node ~/_CODING/hooks/pre-commit-hook/install.js --agent=claude,git
+node ~/_CODING/hooks/pre-commit-hook/install.js --agent=codex,gemini --project=/path/to/repo
 ```
 
 ### All detected agents
 
 ```bash
-node install.js --all
+node ~/_CODING/hooks/pre-commit-hook/install.js --all
 ```
 
 ### Via skills-cli
@@ -43,8 +47,8 @@ npx skills add metazen11/hooks@pre-commit-hook
 ### Uninstall
 
 ```bash
-node install.js --uninstall
-node install.js --uninstall --agent=claude
+node ~/_CODING/hooks/pre-commit-hook/install.js --uninstall
+node ~/_CODING/hooks/pre-commit-hook/install.js --uninstall --agent=claude
 ```
 
 ## How it works per agent

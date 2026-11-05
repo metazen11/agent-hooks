@@ -27,37 +27,41 @@ Full text with obligations, exceptions, evidence, and consequences lives in [`en
 
 ## Installation
 
+Run the installer from the project being installed into (or pass
+`--project=/path/to/repo`). It refuses to run from inside this package
+directory, because the per-agent instruction files belong in the consuming
+project.
+
 ### Interactive wizard
 
 ```bash
-cd contracts
-node install.js
+node ~/_CODING/hooks/contracts/install.js
 ```
 
 ### Specific agents
 
 ```bash
-node install.js --agent=claude,anvil
+node ~/_CODING/hooks/contracts/install.js --agent=claude,anvil
 ```
 
 ### All detected agents
 
 ```bash
-node install.js --all
+node ~/_CODING/hooks/contracts/install.js --all
 ```
 
 ### Target a specific project
 
 ```bash
-node install.js --project=~/path/to/repo --all
+node ~/_CODING/hooks/contracts/install.js --project=/path/to/repo --all
 ```
 
-Without `--project`, installation is global: the Claude Code hook is symlinked into `~/.claude/hooks/` and instructions are written to per-agent user files.
+The Claude Code hook is always global (symlinked into `~/.claude/hooks/`). The Anvil, Codex, and Gemini instruction blocks are written into the project: the current directory unless `--project` is given.
 
 ### Uninstall
 
 ```bash
-node install.js --uninstall
+node ~/_CODING/hooks/contracts/install.js --uninstall
 ```
 
 Removes the hook symlink, deletes the `contracts-hook` entry from `~/.claude/settings.json`, and strips the marker-delimited instruction blocks from each agent's project files.
@@ -121,9 +125,10 @@ Run these opportunistically; both are non-destructive and idempotent.
 
 ```bash
 node test.js
+./test-pull-and-update.sh
 ```
 
-Covers each check module's allow path, deny path, and exemption logic, plus the dispatcher's fail-open behavior on malformed input.
+`test.js` covers each check module's allow path, deny path, and exemption logic, plus the dispatcher's fail-open behavior on malformed input. `test-pull-and-update.sh` runs `pull-and-update.sh` end to end against a throwaway clone and a temp `HOME`.
 
 ## Files
 
