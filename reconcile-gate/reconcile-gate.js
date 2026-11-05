@@ -271,9 +271,10 @@ function defanged(line) {
 //   `&` or `|`. With no separator in it the first word is the only command on
 //   the line, so the heredoc feeds that command and nothing else.
 // - The delimiter is a plain quoted word that ends where the shell ends it.
-// - Nothing after it can hand the body on: no pipe, no further command, no
-//   process substitution, no descriptor (`>&3`, /dev/fd/3) that an earlier line
-//   may have attached to a shell.
+// - Nothing after it on that line can hand the body on: no pipe, no further
+//   command, no process substitution, no descriptor (`>&3`, /dev/fd/3) that an
+//   earlier line may have attached to a shell. A LATER line that runs the file
+//   the body was written to is not seen here: no file's contents are inspected.
 // Returns { tabs } (`<<-` form) or null.
 const INERT_REST = /^(?:[ \t]|>>?[ \t]*(?!\/(?:dev|proc)\/)[\w.\/$~+@%,:=-]+(?=[ \t]|$))*(?:#[\w \t.\/$~+@%,:=-]*)?$/;
 function inertHereDoc(line, index) {
@@ -342,8 +343,8 @@ function shellState(text, state) {
         } else if (ch === '(' || ch === ')' || ch === '{' || ch === '}') {
             return UNKNOWN;
         } else if (ch === '#' && (i === 0 || /[\s;&|<>]/.test(text[i - 1]))) {
-            // A comment, unless the shell is interactive: skip it only when the
-            // rest of the line reads the same either way.
+            // A comment (the hook's shells are not interactive): skip to the end
+            // of the line unless it holds a character that could leave something open.
             let end = text.indexOf('\n', i);
             if (end === -1) end = text.length;
             if (/['"\\`(){}]/.test(text.slice(i, end))) return UNKNOWN;

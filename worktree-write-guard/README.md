@@ -40,8 +40,14 @@ Everything else is deliberately **not** recognised, because a shell may run the
 body: a **chained** heredoc (`cd repo && cat > f <<'EOF'`), a pipe or second
 command after it, a quoted file name before `<<`, a heredoc inside `$(...)`, or
 one that follows a loop, a function definition, `eval`, `source`, `export` and
-the like. Such a body is inspected like any other command text. Put the heredoc
-on its own line, or write the file with a tool.
+the like. Such a body is inspected as command text with quotes, backticks and
+parentheses removed, from the directory the command starts in (a `cd` inside the
+body is not followed). Put the heredoc on its own line, or write the file with a
+tool.
+
+Not covered, here or anywhere in this hook: a later line that runs a file the
+heredoc wrote (`cat > x.sh <<'EOF'` … `EOF`, then `sh x.sh`). The contents of
+files are never inspected.
 
 ## Install
 
