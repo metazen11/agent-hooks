@@ -16,6 +16,11 @@
 //  with the exact command to run. Nothing is merged without an explicit
 //  `--apply`, which the operator runs deliberately.
 //
+//  NOTIFY asks "does this checkout lack commits that are on origin/<branch>?"
+//  whatever is checked out and however dirty the tree is: on another branch,
+//  dirty or diverged it still reports the count, with the reason in place of
+//  a command. Only an in-progress git operation is left unfetched and silent.
+//
 //  Even with --apply it is cowardly: FAST-FORWARD ONLY, and it REFUSES
 //  (leaving the repo untouched, reporting why) when:
 //
@@ -86,39 +91,54 @@ function inspectRepo(repo, apply) {
 
     const current = git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']);
     if (!current) return res('error', 'cannot read HEAD');
-    if (current !== branch) return res('skipped', `on '${current}', not '${branch}'`);
+    // `blocked` = why --apply must leave this checkout alone. NOTIFY carries on
+    // regardless: "does HEAD lack commits that are on origin/<branch>?" does not
+    // depend on what is checked out (git-session parks every checkout on
+    // work/session-*) and answering it only needs a fetch. It then reports the
+    // reason INSTEAD of a command — there is no safe one to offer.
+    const offBranch = current !== branch;
+    let blocked = offBranch ? `on '${current}', not '${branch}'` : '';
+    if (apply && blocked) return res('skipped', blocked);
 
-    // Dirty tree — never touch it.
-    const dirty = git(dir, ['status', '--porcelain']);
+    // Dirty tree — never touch it. (--no-optional-locks: read it, write nothing.)
+    const dirty = git(dir, ['--no-optional-locks', 'status', '--porcelain']);
     if (dirty === null) return res('error', 'git status failed');
-    if (dirty !== '') {
+    if (!blocked && dirty !== '') {
         const n = dirty.split('\n').filter(Boolean).length;
-        return res('skipped', `${n} uncommitted change${n === 1 ? '' : 's'}`);
+        blocked = `${n} uncommitted change${n === 1 ? '' : 's'}`;
+        if (apply) return res('skipped', blocked);
     }
 
-    const upstream = git(dir, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+    const upstream = offBranch
+        ? `origin/${branch}`
+        : git(dir, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
     if (!upstream) return res('skipped', 'no upstream tracking branch');
 
-    if (git(dir, ['fetch', '--quiet', '--prune'], 45000) === null) {
+    if (git(dir, ['fetch', '--quiet', '--prune', ...(offBranch ? ['origin'] : [])], 45000) === null) {
         return res('skipped', 'fetch failed (offline?)');
     }
 
     const counts = git(dir, ['rev-list', '--left-right', '--count', `HEAD...${upstream}`]);
-    if (!counts) return res('error', 'cannot compare with upstream');
+    if (!counts) return res('error', `cannot compare with ${upstream}`);
     const [ahead, behind] = counts.split(/\s+/).map(Number);
 
-    if (behind === 0) return res('current', ahead > 0 ? `${ahead} local commit(s) to push` : 'up to date');
+    if (behind === 0) {
+        if (offBranch) return res('current', `has all of ${upstream} (${blocked})`);
+        return res('current', ahead > 0 ? `${ahead} local commit(s) to push` : 'up to date');
+    }
     // Diverged: local commits the remote lacks. A ff would lose nothing, but it
     // cannot ff anyway — surface it rather than attempting anything clever.
-    if (ahead > 0) return res('skipped', `diverged: ${ahead} ahead, ${behind} behind — reconcile manually`);
+    if (!blocked && ahead > 0) {
+        blocked = `diverged: ${ahead} ahead, ${behind} behind — reconcile manually`;
+        if (apply) return res('skipped', blocked);
+    }
 
-    // Behind and clean: this is the one case we CAN safely advance.
+    // Behind. On the branch, clean and not diverged is the one case we CAN
+    // safely advance, so it is the only one that gets a command.
     if (!apply) {
-        return {
-            slug, status: 'behind', behind,
-            detail: `${behind} new commit${behind === 1 ? '' : 's'} on ${upstream}`,
-            cmd: `git -C ${dir} merge --ff-only ${upstream}`,
-        };
+        const detail = `${behind} new commit${behind === 1 ? '' : 's'} on ${upstream}`;
+        if (blocked) return { slug, status: 'behind', behind, detail: `${detail}; ${blocked}` };
+        return { slug, status: 'behind', behind, detail, cmd: `git -C ${dir} merge --ff-only ${upstream}` };
     }
 
     const before = git(dir, ['rev-parse', '--short', 'HEAD']);
@@ -195,10 +215,10 @@ function main() {
     if (!hookMode) {
         for (const r of results) {
             console.log(`  ${r.status.padEnd(8)} ${r.slug.padEnd(16)} ${r.detail}`);
-            if (r.status === 'behind') console.log(`           ${r.cmd}`);
+            if (r.cmd) console.log(`           ${r.cmd}`);
         }
         if (results.length === 0) console.log('  (nothing to report)');
-        if (results.some((r) => r.status === 'behind')) {
+        if (results.some((r) => r.cmd)) {
             console.log('\n  Run with --apply to fast-forward these.');
         }
         return;
@@ -214,9 +234,16 @@ function main() {
         out.push('These repos have new commits upstream (nothing has been changed):');
         for (const r of behind) out.push(`- ${r.slug}: ${r.detail}`);
         out.push('');
-        out.push('ASK THE USER whether to update. Only if they agree, run:');
-        for (const r of behind) out.push(`  ${r.cmd}`);
-        out.push('Then tell them to restart Claude Code so the new hook code loads.');
+        const ff = behind.filter((r) => r.cmd);
+        if (ff.length > 0) {
+            out.push('ASK THE USER whether to update. Only if they agree, run:');
+            for (const r of ff) out.push(`  ${r.cmd}`);
+            out.push('Then tell them to restart Claude Code so the new hook code loads.');
+        }
+        if (ff.length < behind.length) {
+            out.push('An entry with a reason after ";" cannot be fast-forwarded as it stands: TELL THE');
+            out.push('USER; do not switch branches, stash, merge or rebase there on your own.');
+        }
     }
     if (updated.length > 0) {
         out.push('Fast-forwarded:');
