@@ -40,4 +40,9 @@ check allow "printf '%s\\n' 'git push $ROOT/repo/main'"
 check deny "printf '%s\\n' '$ROOT/repo/main/file' | xargs rm -f"
 check allow "printf '%s\\n' '$ROOT/repo/.claude/worktrees/agent-1/file' | xargs rm -f"
 check allow "find '$ROOT/repo/.claude/worktrees/agent-1' -name temp -print0 | xargs -0 rm -f"
+# Issue #51: a heredoc feeds the LAST simple command before `<<`, not the first word of the line.
+check allow $'true && cat > note.md <<\x27EOF\x27\nrm '$ROOT'/repo/main/out.txt\nEOF'
+check deny $'cat x; bash <<\x27EOF\x27\nrm '$ROOT'/repo/main/out.txt\nEOF'
+check deny $'true && cat <<\x27EOF\x27\nprose\nEOF\nrm '$ROOT'/repo/main/out.txt'
+check deny $'bash -s $(true; true) cat <<\x27EOF\x27\nrm '$ROOT'/repo/main/out.txt\nEOF'
 echo "3 command-parsing cases passed"
