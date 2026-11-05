@@ -32,18 +32,38 @@ deny $'cat <<\x27END DOC\x27\nprose\nEND DOC\ngit push origin main'
 # word of the line. Quoted bodies are inert wherever that command sits in a chain.
 note=$'<<\x27EOF\x27\nThe same `gh pr create` was refused once.\ngit push origin main\nEOF'
 for sep in '&&' '||' ';' '|'; do allow "true $sep cat > a.md $note"; done
-allow "mkdir -p \$(dirname a/b) && cat > \${PWD}/a.md 2>&1 $note"
+allow "cd repo && S=x && cat > \$S/a.md 2>&1 $note"
 # ...and a shell later in the chain still executes its heredoc, whatever precedes it.
 doc=$'<<\x27EOF\x27\ngit push origin main\nEOF'
 for owner in 'cat x; bash' 'cat x && bash' 'echo hi & sh' 'true && bash'; do deny "$owner $doc"; done
 deny $'true && cat <<\x27EOF\x27 | bash\ngit push origin main\nEOF'
 deny $'true && cat <<\x27EOF\x27\nprose\nEOF\ngit push origin main'
 deny $'true && cat <<EOF\n$(git push origin main)\nEOF'
-# Owner not provable from the line (group, substitution, escape, redirect,
-# comment): the body stays visible, fail closed.
+# Recognition is an allowlist: quoting, escaping, grouping or a comment before `<<`
+# means the owner cannot be read off the line, so the body stays visible.
 for owner in 'bash -s $(true; echo ) cat' '(bash; cat )' 'bash -s `true; echo ` cat' \
-    'bash -s a\; cat' 'bash -s >| cat' 'true # && cat' 'echo { ; bash -s } cat' 'eval $(true; cat'; do
+    'bash -s a\; cat' 'bash -s >| cat' 'true # && cat' 'echo { ; bash -s } cat' 'eval $(true; cat' \
+    'cat \>; bash' 'bash -s "$(echo "a ; cat " )"' "bash -s 'a\\' '; cat '" '>cat bash -s' 'bash -s >>| cat'; do
     deny "$owner $doc"
 done
 deny "echo \$(bash $doc"$'\n)'
+deny $'cat <<\x27EO\x27F\nprose\nEOF\ngit push origin main\nEO'
+# Nothing is recognised while a quote, parenthesis or line continuation may be
+# open from earlier lines, or on a line that leaves one open.
+gated=$'The same `gh pr create` was refused once.\ngit push origin main'
+deny $'echo "start\nx; cat <<\x27EOF\x27"\ngit push origin main\nEOF'
+deny $'echo "start\ncat <<\x27EOF\x27"\ngit push origin main\nEOF'
+deny $'cat <<\x27EOF\x27 "\n`git push origin main`\n"\nEOF'
+deny $'bash -s a \\\ncat <<\x27EOF\x27\ngit push origin main\nEOF'
+deny $'(\ncat <<\x27EOF\x27\ngit push origin main\nEOF\n) | bash'
+allow $'gh issue create --title t --body "Repro:\ncd repo && cat > f <<\x27EOF\x27\nis refused when chained\n"'
+allow $'git commit -m "subject\n\nit\x27s the body"\ntrue && cat > a.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
+allow $'(echo "say \\"hi\\"" it\\\x27s\n) # don\x27t\ntrue && cat > a.md <<\x27EOF\x27 > "${OUT}" # it\x27s a note\n'"$gated"$'\nEOF'
+# Heredoc bodies are raw text for every owner: they neither open quotes nor nest heredocs.
+allow $'cat > a.md <<\x27EOF\x27\ndon\x27t\nEOF\ntrue && cat > b.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
+allow $'git commit -F - <<\x27EOF\x27\ndon\x27t\nEOF\ntrue && cat > b.md <<\x27EOF\x27\n'"$gated"$'\nEOF'
+deny $'bash <<\x27EOF\x27\ncat <<\x27X\x27\nEOF\ngit push origin main\nX'
+# A `<<` that is not recognised may start a body that is not shell text, so
+# recognition stops for the rest of the command.
+deny $'cat > "f" <<\x27EOF\x27\nsay "hi\nEOF\ngit commit -m "x\ny; cat <<\x27EOF2\x27\n`git push origin main`\n"'
 [ "$fails" -eq 0 ] && echo "heredoc parsing cases passed"
