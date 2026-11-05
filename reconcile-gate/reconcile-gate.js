@@ -287,9 +287,10 @@ function inertHereDoc(line, index) {
 }
 
 // Shell state after `text` (whole lines without `<<`, each ending in \n) when it
-// starts in `state`: NOTHING_OPEN, or { quote, command } while a quote or a line
-// continuation (trailing backslash) is open, or UNKNOWN for good. '..' and ".."
-// are read exactly as the shell reads them. Everything else is an allowlist:
+// starts in `state`: NOTHING_OPEN, or an object while a quote or a line
+// continuation (trailing backslash, `|`, `&&` or `||`) is open, or UNKNOWN for
+// good. '..' and ".." are read exactly as the shell reads them. Everything else
+// is an allowlist:
 // each command word must be one of HARMLESS (commands that cannot rebind a name
 // or attach a later command's output to a shell) or an assignment to a variable
 // the shell gives no meaning to. Any other command word, and anything that
@@ -303,7 +304,8 @@ const SPECIAL_NAME = /path|ifs|env|opt|ld_|dyld|ps\d|prompt|home|dotdir|function
 const WORD = /[^\s;&|<>()]+/y;
 function shellState(text, state) {
     if (state === UNKNOWN) return UNKNOWN;
-    let { quote, command } = state || { quote: null, command: true };
+    // dangling: the last thing read is `|`, `&&` or `||`, so the command goes on
+    let { quote, command, dangling } = state || { quote: null, command: true, dangling: false };
     let continues = false;
     let assigning = false; // inside NAME=value: the word after it is a command word again
     for (let i = 0; i < text.length; i++) {
@@ -312,13 +314,18 @@ function shellState(text, state) {
         if (!quote) {
             if (ch === ' ' || ch === '\t') { command = command || assigning; assigning = false; continue; }
             // `;` `&` `|` end a command, unless glued to a redirect (`>&`, `<&`, `>|`).
-            if (ch === '\n' || (/[;&|]/.test(ch) && !/[<>]/.test(text[i - 1] || ''))) { command = true; assigning = false; continue; }
+            // After `|`, `&&` or `||` the command goes on, also across the end of the line.
+            if (ch === '\n' || (/[;&|]/.test(ch) && !/[<>]/.test(text[i - 1] || ''))) {
+                if (ch === '\n') continues = dangling;
+                else dangling = ch === '|' || (ch === '&' && /[&|]/.test(text[i - 1]));
+                command = true; assigning = false; continue;
+            }
             if (command && ch !== '#') {
                 WORD.lastIndex = i;
                 const word = WORD.test(text) ? text.slice(i, WORD.lastIndex) : '';
                 const name = /^([A-Za-z_]\w*)\+?=/.exec(word);
                 if (name ? SPECIAL_NAME.test(name[1]) : !HARMLESS.has(word)) return UNKNOWN;
-                command = false;
+                command = dangling = false;
                 assigning = !!name;
                 i += (name ? name[0] : word).length - 1; // the value, if any, is read below
                 continue;
@@ -346,7 +353,7 @@ function shellState(text, state) {
             i = end - 1;
         }
     }
-    return quote === null && !continues ? NOTHING_OPEN : { quote, command };
+    return quote === null && !continues ? NOTHING_OPEN : { quote, command, dangling };
 }
 
 /**

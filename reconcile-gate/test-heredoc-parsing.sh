@@ -104,6 +104,7 @@ deny $'( case x in\nx)\ncat <<\x27EOF\x27\ngit push origin main\nEOF\n;; esac ) 
 deny $'echo "start\ncat <<\x27EOF\x27"\ngit push origin main\nEOF'
 deny $'echo "start\nx; cat <<\x27EOF\x27"\ngit push origin main\nEOF'
 deny $'echo a \\\ncat <<\x27EOF\x27\ngit push origin main\nEOF'
+for op in '&&' '||' '|' '|&'; do deny "true $op"$'\n'"cat $doc"; done
 deny $'(\ncat <<\x27EOF\x27\ngit push origin main\nEOF\n) | bash'
 deny $'{ : }\ncat <<\x27EOF\x27\ngit push origin main\nEOF\n} | bash'
 deny $': )\n(\ncat <<\x27EOF\x27\ngit push origin main\nEOF\n) | bash'

@@ -117,6 +117,7 @@ check deny $'( case x in\nx)\ncat '"$doc"$'\n;; esac ) | bash'
 check deny $'echo "start\ncat <<\x27EOF\x27"\n'"$rm_main"$'\nEOF'
 check deny $'echo "start\nx; cat <<\x27EOF\x27"\n'"$rm_main"$'\nEOF'
 check deny $'echo a \\\ncat '"$doc"
+for op in '&&' '||' '|' '|&'; do check deny "true $op"$'\n'"cat $doc"; done
 check deny $'(\ncat '"$doc"$'\n) | bash'
 check deny $'{ : }\ncat '"$doc"$'\n} | bash'
 check deny $': )\n(\ncat '"$doc"$'\n) | bash'
