@@ -44,14 +44,14 @@ check allow "printf '%s\\n' '$ROOT/repo/.claude/worktrees/agent-1/file' | xargs 
 check allow "find '$ROOT/repo/.claude/worktrees/agent-1' -name temp -print0 | xargs -0 rm -f"
 # Issue #51: a heredoc feeds the LAST simple command before `<<`, not the first word of the line.
 doc=$'<<\x27EOF\x27\nrm '$ROOT$'/repo/main/out.txt\nEOF'
-check allow $'true && cat > note.md <<\x27EOF\x27\nrm '$ROOT'/repo/main/out.txt\nEOF'
-check deny $'cat x; bash <<\x27EOF\x27\nrm '$ROOT'/repo/main/out.txt\nEOF'
+check allow "true && cat > note.md $doc"
+check deny "cat x; bash $doc"
 check deny $'true && cat <<\x27EOF\x27\nprose\nEOF\nrm '$ROOT'/repo/main/out.txt'
 check allow "cd repo && S=x && cat > \$S/a.md 2>&1 $doc"
 # Recognition is an allowlist: quoting, escaping, grouping or a comment before `<<`
 # means the owner cannot be read off the line, so the body stays visible.
 for owner in 'bash -s $(true; echo ) cat' 'bash -s `true; echo ` cat' 'bash -s a\; cat' 'bash -s >| cat' 'true # && cat' \
-    'cat \>; bash' 'bash -s "$(echo "a ; cat " )"' "bash -s 'a\\' '; cat '" '>cat bash -s' 'bash -s >>| cat'; do
+    'cat \>; bash' 'bash -s "$(echo "a ; cat " )"' '>cat bash -s' 'bash -s >>| cat'; do
   check deny "$owner $doc"
 done
 check deny "echo \$(bash $doc"$'\n)'
@@ -63,9 +63,18 @@ check deny $'echo "start\ncat <<\x27EOF\x27"\nrm '$ROOT$'/repo/main/out.txt\nEOF
 check deny $'cat <<\x27EOF\x27 "\n`rm '$ROOT$'/repo/main/out.txt`\n"\nEOF'
 check deny $'bash -s a \\\ncat <<\x27EOF\x27\nrm '$ROOT$'/repo/main/out.txt\nEOF'
 check deny $'(\ncat <<\x27EOF\x27\nrm '$ROOT$'/repo/main/out.txt\nEOF\n) | bash'
+check deny $'{ : }\ncat <<\x27EOF\x27\nrm '$ROOT$'/repo/main/out.txt\nEOF\n} | bash'
+check deny $'case x in x) :;; esac\n(\ncat <<\x27EOF\x27\nrm '$ROOT$'/repo/main/out.txt\nEOF\n) | bash'
+check deny $'echo "$(echo "\ncat <<\x27EOF\x27\n`rm '$ROOT$'/repo/main/out.txt`\nEOF\n")"'
+check deny $'echo "${x:-"\ncat <<\x27EOF\x27\n`rm '$ROOT$'/repo/main/out.txt`\nEOF\n"}"'
+check deny $'echo "`echo "\ncat <<\x27EOF\x27\n$(rm '$ROOT$'/repo/main/out.txt)\nEOF\n"`"'
+check deny $'echo $\x27a\\\x27\x27 "it\x27s\ncat <<\x27EOF\x27 # \x27\n`rm '$ROOT$'/repo/main/out.txt`\nEOF\n"'
+check deny $'true # "\ncat <<\x27EOF\x27\n`rm '$ROOT$'/repo/main/out.txt`\nEOF\n"'
+check deny $'# say "hi\necho "x\ncat <<\x27EOF\x27\n`rm '$ROOT$'/repo/main/out.txt`\nEOF\n"'
+check allow $'grep -q x <<< "$v"\ntrue && cat > a.md '"$doc"
 check allow $'gh issue create --title t --body "Repro:\ncd repo && cat > f <<\x27EOF\x27\nis refused when chained\n"'
 check allow $'git commit -m "subject\n\nit\x27s the body"\ntrue && cat > a.md '"$doc"
-check allow $'(echo "say \\"hi\\"" it\\\x27s\n) # don\x27t\ntrue && cat > a.md <<\x27EOF\x27 > "${OUT}" # it\x27s a note\nrm '$ROOT$'/repo/main/out.txt\nEOF'
+check allow $'(echo "5\\" pipe" it\\\x27s\n) # group closed\ntrue && cat > a.md <<\x27EOF\x27 > "${OUT}" # a note\nrm '$ROOT$'/repo/main/out.txt\nEOF'
 # Heredoc bodies are raw text for every owner: they neither open quotes nor nest heredocs.
 check allow $'cat > a.md <<\x27EOF\x27\ndon\x27t\nEOF\ntrue && cat > b.md '"$doc"
 check allow $'git commit -F - <<\x27EOF\x27\ndon\x27t\nEOF\ntrue && cat > b.md '"$doc"

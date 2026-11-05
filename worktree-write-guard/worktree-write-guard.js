@@ -259,64 +259,94 @@ function splitShellSegments(command) {
     return segments;
 }
 
-function stripNonExecutableHereDocs(command) {
-    const lines = String(command || '').split('\n');
+// A quoted note passed to `cat <<EOF` is data, not a second shell program.
+// Keep executable heredocs (bash/sh/zsh/node) visible to the normal parser.
+// Recognising a heredoc is an allowlist (hereDocMarker); every other `<<` leaves
+// its body visible to the normal parser, which is the fail-closed direction.
+function stripNonExecutableHereDocs(cmd) {
+    const lines = String(cmd || '').split('\n');
     const out = [];
     let delimiter = null;
-    let delimiterQuoted = false;
+    let inert = false;
+    // What earlier visible lines left open; a heredoc is recognised only on a
+    // line that starts with nothing open. Heredoc bodies are not shell text
+    // and never feed this.
+    let state = NOTHING_OPEN;
     for (const line of lines) {
         if (delimiter) {
-            if (line.trim() === delimiter) { delimiter = null; delimiterQuoted = false; }
-            else if (!delimiterQuoted) out.push(line);
+            if (line.trim() === delimiter) delimiter = null;
+            else if (!inert) out.push(line);
             continue;
         }
-        const marker = hereDocMarker(line);
+        const marker = state === NOTHING_OPEN ? hereDocMarker(line) : null;
         if (marker) {
-            const before = line.slice(marker.cmdStart, marker.index).trim();
-            const first = before.split(/\s+/)[0];
             const executablePipeline = /\|\s*(?:env\s+)?(?:[\w.-]+\/|\/[^\s|;&]+\/|\/)?(?:bash|sh|zsh|node)\b/.test(line);
-            if (['cat', 'echo', 'printf', 'tee'].includes(first) && !executablePipeline) {
-                delimiter = marker.delimiter;
-                delimiterQuoted = marker.quoted;
-            }
+            delimiter = marker.delimiter;
+            inert = marker.quoted && ['cat', 'echo', 'printf', 'tee'].includes(marker.owner) && !executablePipeline;
+        } else {
+            state = shellState(line + '\n', state);
         }
         out.push(line);
     }
     return out.join('\n');
 }
 
-// cmdStart = where the simple command that the heredoc feeds begins: after the
-// last top-level `;`, `&`, `|` (not the redirects `>&`, `<&`, `>|`). Returns null
-// (body stays visible, fail closed) when that owner cannot be read off the line:
-// backticks, a comment, a separator inside (...)/{...}, or `<<` inside a group.
+// Allowlist: the only line recognised is `<plain text> << <delimiter word> <rest>`.
+// Plain text has no quote, backslash, backtick, parenthesis, brace or `#`, so every
+// `;` `&` `|` in it that is not glued to a redirect (`>&`, `<&`, `>|`, zsh `>>|`)
+// ends a command and the heredoc feeds the last one: `owner` is its first word.
+// `&>` is split too, because POSIX sh reads it as `&` then `>`. The rest of the
+// line must leave nothing open. Anything else returns null.
 function hereDocMarker(line) {
-    let quote = null, cmdStart = 0, depth = 0;
-    for (let i = 0; i < line.length - 1; i++) {
-        const ch = line[i];
-        if (quote) { if (ch === quote && line[i - 1] !== '\\') quote = null; continue; }
-        if (ch === "'" || ch === '"') { quote = ch; continue; }
-        if (ch === '\\') { i++; continue; }
-        if (ch === '`' || (ch === '#' && !/\S/.test(line[i - 1] || ' '))) return null;
-        if (ch === '(' || ch === '{') depth++;
-        else if (ch === ')' || ch === '}') depth--;
-        else if (/[;&|]/.test(ch) && !/[<>]/.test(line[i - 1])) { if (depth) return null; cmdStart = i + 1; }
-        if (ch !== '<' || line[i + 1] !== '<') continue;
-        if (depth) return null;
-        let j = i + 2;
-        if (line[j] === '-') j++;
-        while (/\s/.test(line[j] || '')) j++;
-        const q = line[j] === "'" || line[j] === '"' ? line[j++] : null;
-        const start = j;
-        if (q) {
-            while (j < line.length && line[j] !== q) j++;
-            if (line[j] !== q) return null;
-        } else {
-            while (/[A-Za-z0-9_.-]/.test(line[j] || '')) j++;
+    const index = line.indexOf('<<');
+    if (index === -1) return null;
+    const prefix = line.slice(0, index);
+    const m = /^<<-?[ \t]*(?:'([^']+)'|"([^"\\$`]+)"|([A-Za-z0-9_.-]+))(?![^\s;&|<>])/.exec(line.slice(index));
+    if (!m || /['"\\`(){}#]/.test(prefix)) return null;
+    if (shellState(line.slice(index + m[0].length) + '\n', NOTHING_OPEN) !== NOTHING_OPEN) return null;
+    const owner = prefix.replace(/[<>]+[&|]*/g, '>').split(/[;&|]/).pop().trim().split(/[\s>]/)[0];
+    return { owner, delimiter: m[1] || m[2] || m[3], quoted: !m[3] };
+}
+
+// Shell state after `text` (whole lines, each ending in \n) when it starts in
+// `state`: NOTHING_OPEN, or { quote, depth } while a quote, parentheses or a line
+// continuation (trailing backslash) is open, or UNKNOWN. '..' and ".." are read
+// exactly as the shell reads them; whatever cannot be read exactly is UNKNOWN for
+// good: a backtick, $'..', `$(` inside double quotes, a brace outside `${NAME}`,
+// an unmatched `)`, a `<<` (what follows may be a heredoc body, not shell text)
+// and a `#` comment containing any of these.
+const NOTHING_OPEN = null;
+const UNKNOWN = false;
+function shellState(text, state) {
+    if (state === UNKNOWN) return UNKNOWN;
+    let { quote, depth } = state || { quote: null, depth: 0 };
+    let continues = false;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (quote === "'") { if (ch === "'") quote = null; continue; }
+        if (ch === '\\') { continues = ++i === text.length - 1; continue; }
+        if (ch === '`' || (ch === '$' && text[i + 1] === "'")) return UNKNOWN;
+        if (text.startsWith('<<', i)) { if (text[i + 2] !== '<') return UNKNOWN; i += 2; continue; }
+        if (ch === '$' && text[i + 1] === '{') {
+            const close = text.indexOf('}', i);
+            if (close === -1 || !/^\w+$/.test(text.slice(i + 2, close))) return UNKNOWN;
+            i = close;
+        } else if (quote) {
+            if (ch === '"') quote = null;
+            else if (ch === '$' && text[i + 1] === '(') return UNKNOWN;
+        } else if (ch === "'" || ch === '"') {
+            quote = ch;
+        } else if (ch === '{' || ch === '}' || (ch === ')' && --depth < 0)) {
+            return UNKNOWN;
+        } else if (ch === '(') {
+            depth++;
+        } else if (ch === '#' && (i === 0 || /[\s;&|()<>]/.test(text[i - 1]))) {
+            // A comment, unless the shell is interactive: fine only when the rest
+            // of the line reads the same either way.
+            if (/^[^\n]*(?:['"\\`(){}]|<<)/.test(text.slice(i))) return UNKNOWN;
         }
-        if (j === start) return null;
-        return { index: i, cmdStart, delimiter: line.slice(start, j), quoted: !!q };
     }
-    return null;
+    return quote === null && depth === 0 && !continues ? NOTHING_OPEN : { quote, depth };
 }
 
 function scanBashSegmentForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, effectiveCwd) {
