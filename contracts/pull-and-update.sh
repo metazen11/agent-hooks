@@ -70,8 +70,9 @@ if [[ ! -f "$INSTALL_JS" ]]; then
 fi
 
 info "reinstalling contracts hook for all detected agents"
-cd "$HOOKS_REPO/contracts"
 
+# cwd stays at the repo root: install.js treats cwd as the target project and
+# refuses its own package directory.
 if ! node "$INSTALL_JS" --all; then
   fail "install.js --all exited non-zero" 2
 fi
