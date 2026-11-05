@@ -19,8 +19,10 @@ Automatically intercepts plan submission and blocks it until the plan passes a p
 
 ## Installation
 
+Run from the project being installed into; the installer refuses to run from inside this package directory.
+
 ```bash
-node install.js              # Interactive wizard
-node install.js --all        # All detected agents
-node install.js --uninstall  # Remove all
+node ~/_CODING/hooks/plan-refiner/install.js              # Interactive wizard
+node ~/_CODING/hooks/plan-refiner/install.js --all        # All detected agents
+node ~/_CODING/hooks/plan-refiner/install.js --uninstall  # Remove all
 ```

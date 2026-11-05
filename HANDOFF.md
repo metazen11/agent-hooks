@@ -1,6 +1,14 @@
 # Session Handoff
 
-**Last updated:** 2026-10-25
+**Last updated:** 2026-11-05
+
+## 2026-11-05 - installer/updater defects (#43)
+
+- `contracts/pull-and-update.sh` exited 2 on every run: it `cd`'d into `contracts/` before `install.js --all`, and the installer refuses its own package directory as the target project. It now stays at the repo root. Regression test: `contracts/test-pull-and-update.sh`.
+- The `contracts`, `plan-refiner` and `pre-commit-hook` installers are run from the project being installed into (`node ~/_CODING/hooks/<pkg>/install.js ...`), never after `cd <pkg>`. READMEs and SKILL.md files say so.
+- Node suites (`*/test.js`, `*/tests/*.test.js`) now run in CI through `test-node-suites.sh`, which discovers them; a new suite needs no registration.
+- Root `install.sh` is now a thin wrapper around `pre-commit-hook/install.js --agent=git` for the repo it is run from. Its own logic, which installed every top-level file into the parent directory's `.git/hooks`, is gone.
+- `self-update/repos.json` watches `main` for `agent-hooks` and `agent-memory`. `.gitignore` covers `.env`, `.env.*` (not `.env.example`) and `.worktrees/`.
 
 ## 2026-10-25 - git-session never pushes (#33)
 
@@ -112,7 +120,7 @@ now that it's debounced+activity-gated. Wired in ~/.claude/settings.json (PostTo
 git clone https://github.com/metazen11/agent-hooks.git ~/_CODING/hooks
 
 # Install for all detected agents on this machine:
-cd ~/_CODING/hooks/contracts && node install.js --all
+cd ~/_CODING/hooks && node contracts/install.js --all
 ```
 
 Detects and wires up whichever of Claude Code / Codex / Gemini / Anvil are present.
@@ -123,7 +131,7 @@ Detects and wires up whichever of Claude Code / Codex / Gemini / Anvil are prese
 ~/_CODING/hooks/contracts/pull-and-update.sh
 ```
 
-Or manually: `cd ~/_CODING/hooks && git pull --ff-only origin main && cd contracts && node install.js --all`
+Or manually: `cd ~/_CODING/hooks && git pull --ff-only origin main && node contracts/install.js --all`
 
 > **Trunk note (2026-10-14):** this repo is now single-trunk; install from `main`.
 

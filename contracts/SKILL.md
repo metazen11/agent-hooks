@@ -17,8 +17,10 @@ Installs the canonical `engineering-contract.md` and its mechanical checks so ev
 
 ## Installation
 
+Run from the project being installed into; the installer refuses to run from inside this package directory.
+
 ```bash
-node install.js              # Interactive wizard
-node install.js --all        # All detected agents
-node install.js --uninstall  # Remove all
+node ~/_CODING/hooks/contracts/install.js              # Interactive wizard
+node ~/_CODING/hooks/contracts/install.js --all        # All detected agents
+node ~/_CODING/hooks/contracts/install.js --uninstall  # Remove all
 ```
