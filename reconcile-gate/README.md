@@ -29,6 +29,15 @@ Bypass: append `--force-anyway` anywhere in the command. The flag is visible in 
 
 All other Bash calls and all non-Bash tool calls pass through unchanged.
 
+### Writing prose that mentions a gated command
+
+Text is not a command, but the hook only knows that in two cases:
+
+- **Use a file-writing tool** (Write/Edit) for notes, issue bodies and commit messages, then pass the file (`gh issue create --body-file f`, `git commit -F f`). Nothing in a file is inspected.
+- **Or use a plain quoted heredoc, first on its line:** `cat > notes.md <<'EOF'` … `EOF`, also `cat <<'EOF' > notes.md` and `tee notes.md <<'EOF'`. The body is treated as data only when all of this holds: `cat`/`echo`/`printf`/`tee` is the first and only command on the line; nothing before `<<` is quoted, escaped or grouped; the delimiter is a quoted plain word; only `> file` / `>> file` (not a descriptor such as `>&2`) or a plain comment follows it; the terminator is the delimiter exactly; and every earlier line of the command uses only `cd`, `true`, `:`, `mkdir`, `echo`, `printf`, `pwd`, `cat`, `tee`, `touch`, `ls`, `git`, `gh` and plain variable assignments.
+
+Everything else is deliberately **not** recognised, because a shell may run the body: a **chained** heredoc (`cd repo && cat > f <<'EOF'`), a pipe or second command after it, a quoted file name before `<<`, a heredoc inside `$(...)`, or one that follows a loop, a function definition, `eval`, `source`, `export` and the like. Such a body is inspected: a line in it that starts with a gated command is denied, while a mention in the middle of a sentence or in backticks is not. Put the heredoc on its own line, or write the file with a tool.
+
 ## Per-project override
 
 A repo whose own contract defines an additional PR flow (e.g. feature branch → `dev`) can add allowed pairs in `.reconcile-gate.json` at its root:
