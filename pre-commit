@@ -54,13 +54,13 @@ for file in $STAGED_PY; do
     # Check for excessive class inheritance depth
     if grep -n "class.*(.*(.*(.*).*)):" "$file" 2>/dev/null; then
       warn "Deep inheritance detected in $file - consider simplifying"
-      ((WARNINGS++))
+      WARNINGS=$((WARNINGS + 1))
     fi
 
     # Check for overly complex comprehensions
     if grep -nE "\[.{80,}\]" "$file" 2>/dev/null; then
       warn "Complex list comprehension in $file - consider breaking down"
-      ((WARNINGS++))
+      WARNINGS=$((WARNINGS + 1))
     fi
   fi
 done
@@ -79,7 +79,7 @@ for file in $STAGED_PY; do
     if [[ -n "$matches" ]]; then
       echo "$matches"
       fail "Potential SQL injection in $file"
-      ((ERRORS++))
+      ERRORS=$((ERRORS + 1))
     fi
 
     # Command injection
@@ -87,7 +87,7 @@ for file in $STAGED_PY; do
     if [[ -n "$matches" ]]; then
       echo "$matches"
       warn "Potential command injection risk in $file - verify input sanitization"
-      ((WARNINGS++))
+      WARNINGS=$((WARNINGS + 1))
     fi
 
     # Hardcoded secrets
@@ -95,7 +95,7 @@ for file in $STAGED_PY; do
     if [[ -n "$matches" ]]; then
       echo "$matches"
       fail "Potential hardcoded secret in $file"
-      ((ERRORS++))
+      ERRORS=$((ERRORS + 1))
     fi
   fi
 done
@@ -107,7 +107,7 @@ for file in $STAGED_JS; do
     if [[ -n "$matches" ]]; then
       echo "$matches"
       warn "innerHTML usage in $file - verify XSS protection"
-      ((WARNINGS++))
+      WARNINGS=$((WARNINGS + 1))
     fi
 
     # eval usage
@@ -115,7 +115,7 @@ for file in $STAGED_JS; do
     if [[ -n "$matches" ]]; then
       echo "$matches"
       fail "eval() usage in $file - security risk"
-      ((ERRORS++))
+      ERRORS=$((ERRORS + 1))
     fi
   fi
 done
@@ -134,7 +134,7 @@ for file in $STAGED_PY; do
     if [[ -n "$matches" ]]; then
       echo "$matches"
       warn "Non-snake_case function name in $file"
-      ((WARNINGS++))
+      WARNINGS=$((WARNINGS + 1))
     fi
 
     # Check for non-PascalCase class names
@@ -142,7 +142,7 @@ for file in $STAGED_PY; do
     if [[ -n "$matches" ]]; then
       echo "$matches"
       warn "Non-PascalCase class name in $file"
-      ((WARNINGS++))
+      WARNINGS=$((WARNINGS + 1))
     fi
 
     # Check for single-letter variable names (except i, j, k, x, y, z in loops)
@@ -150,7 +150,7 @@ for file in $STAGED_PY; do
     if [[ -n "$matches" ]]; then
       echo "$matches"
       warn "Single-letter variable name in $file - consider descriptive names"
-      ((WARNINGS++))
+      WARNINGS=$((WARNINGS + 1))
     fi
   fi
 done
@@ -162,7 +162,7 @@ for file in $STAGED_JS; do
     if [[ -n "$matches" ]]; then
       echo "$matches"
       warn "Non-camelCase function name in $file"
-      ((WARNINGS++))
+      WARNINGS=$((WARNINGS + 1))
     fi
   fi
 done
@@ -206,7 +206,7 @@ if [[ -n "$PYTEST" ]]; then
       info "Running related tests..."
       if ! "$PYTEST" $TEST_FILES -q --tb=no 2>/dev/null; then
         fail "Tests failed - fix before committing"
-        ((ERRORS++))
+        ERRORS=$((ERRORS + 1))
       else
         success "Related tests passed"
       fi
@@ -229,16 +229,24 @@ for file in $STAGED_PY; do
   if [[ -f "$file" ]]; then
     # Check for functions without docstrings (> 10 lines)
     # This is a simplified check
-    func_count=$(grep -c "^def " "$file" 2>/dev/null || echo 0)
-    doc_count=$(grep -c '"""' "$file" 2>/dev/null || echo 0)
+    # grep -c prints 0 itself on no match (and exits 1), so never append a
+    # second count; default only when grep printed nothing at all.
+    func_count=$(grep -c "^def " "$file" 2>/dev/null || true)
+    doc_count=$(grep -c '"""' "$file" 2>/dev/null || true)
+    func_count=${func_count:-0}
+    doc_count=${doc_count:-0}
 
     if [[ $func_count -gt 3 ]] && [[ $doc_count -lt $((func_count / 2)) ]]; then
       warn "Low docstring coverage in $file ($doc_count docstrings for $func_count functions)"
-      ((WARNINGS++))
+      WARNINGS=$((WARNINGS + 1))
     fi
 
     # Check for TODO/FIXME that might need addressing
-    if grep -nE "(TODO|FIXME|XXX|HACK):" "$file" 2>/dev/null | head -3; then
+    # Test the matches, not the pipeline: `grep | head` exits 0 even when
+    # grep found nothing, which warned on every file.
+    todos=$(grep -nE "(TODO|FIXME|XXX|HACK):" "$file" 2>/dev/null | head -3 || true)
+    if [[ -n "$todos" ]]; then
+      echo "$todos"
       warn "Found TODO/FIXME comments in $file - consider addressing"
     fi
   fi
@@ -250,7 +258,7 @@ for file in $STAGED_PY $STAGED_JS; do
     long_lines=$(awk 'length > 120 {count++} END {print count+0}' "$file")
     if [[ $long_lines -gt 5 ]]; then
       warn "$file has $long_lines lines > 120 chars - consider breaking up"
-      ((WARNINGS++))
+      WARNINGS=$((WARNINGS + 1))
     fi
   fi
 done
