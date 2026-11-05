@@ -56,23 +56,23 @@ ERRORS=0
 TOTAL=0
 
 for file in $STAGED_PLANS; do
-  ((TOTAL++))
+  # Not ((TOTAL++)): from 0 it returns 1, and bash >= 4.1 exits on that under set -e.
+  TOTAL=$((TOTAL + 1))
   if [[ ! -f "$file" ]]; then
     continue
   fi
 
   echo -n "  Validating ${file}... "
 
-  if $VALIDATOR "$file" >/dev/null 2>/tmp/quality-gate-err.txt; then
+  # stderr only, held in a variable: no shared temp file between concurrent runs.
+  if err=$($VALIDATOR "$file" 2>&1 >/dev/null); then
     echo -e "${GREEN}PASS${NC}"
   else
     echo -e "${RED}FAIL${NC}"
-    cat /tmp/quality-gate-err.txt | sed 's/^/    /'
-    ((ERRORS++))
+    echo "$err" | sed 's/^/    /'
+    ERRORS=$((ERRORS + 1))
   fi
 done
-
-rm -f /tmp/quality-gate-err.txt
 
 echo ""
 
