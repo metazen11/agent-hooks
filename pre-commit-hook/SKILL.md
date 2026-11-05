@@ -18,18 +18,20 @@ A multi-agent pre-commit hook that ensures code quality before commits.
 
 ## Installation
 
+Run from the project being installed into; the installer refuses to run from inside this package directory.
+
 ```bash
 # Interactive wizard
-node install.js
+node ~/_CODING/hooks/pre-commit-hook/install.js
 
 # Specific agents
-node install.js --agent=claude,git
+node ~/_CODING/hooks/pre-commit-hook/install.js --agent=claude,git
 
 # All detected agents
-node install.js --all
+node ~/_CODING/hooks/pre-commit-hook/install.js --all
 
 # Uninstall
-node install.js --uninstall
+node ~/_CODING/hooks/pre-commit-hook/install.js --uninstall
 ```
 
 ## Distribution

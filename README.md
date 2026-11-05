@@ -25,10 +25,9 @@ session start. Pass `--no-wire` to symlink without touching settings, and
 `--uninstall` to remove cleanly. Installers are idempotent: re-running one is
 safe.
 
-Strict-block gates (`reconcile-gate`, `hf-launch-gate`, `dispatch-gate`,
-`worktree-write-guard`) default to symlink-only and require an explicit
-`--wire`, because enabling something that can refuse a tool call is an
-operator decision.
+The strict-block gates `hf-launch-gate` and `dispatch-gate` default to
+symlink-only and require an explicit `--wire`, because enabling something that
+can refuse a tool call is an operator decision.
 
 ### Staying current
 
@@ -38,9 +37,25 @@ is behind, with the command to update. It never merges on its own. See
 
 ### Git hooks (separate)
 
+Run from the repo that should get the `pre-commit` quality checks:
+
 ```bash
-./install.sh     # installs pre-commit etc. into .git/hooks of THIS repo
+node ~/_CODING/hooks/pre-commit-hook/install.js --agent=git
+~/_CODING/hooks/install.sh     # short form of the same command
 ```
+
+Inside a clone of this repo the short form is `./install.sh`, which installs
+into that clone. `install.sh` only delegates to the installer above and passes
+extra arguments through (e.g. `--uninstall`).
+
+This symlinks that repo's `.git/hooks/pre-commit` to the [`pre-commit`](pre-commit)
+script here, first copying any existing hook to
+`pre-commit.pre-commit-backup-<timestamp>`; `--uninstall --agent=git` removes
+the symlink. It writes to `.git/hooks` only, so it has no effect in a repo
+where `core.hooksPath` is set, or in a linked worktree, where `.git` is a file.
+A fresh clone of this repo has no `core.hooksPath`; once the setup step in
+[CONTRIBUTING.md](CONTRIBUTING.md) has pointed it at `.githooks`, git no longer
+runs hooks from `.git/hooks` there.
 
 ## Branching contract
 
@@ -84,11 +99,13 @@ Runs before each commit to ensure code quality. See [`pre-commit-hook/`](pre-com
 
 Interactive wizard that installs the pre-commit hook across multiple AI coding agents:
 
+Run from the project being installed into (or pass `--project=/path/to/repo`);
+the installer refuses to run from inside its own directory:
+
 ```bash
-cd pre-commit-hook
-node install.js              # Interactive wizard
-node install.js --all        # All detected agents
-node install.js --uninstall  # Remove all
+node ~/_CODING/hooks/pre-commit-hook/install.js              # Interactive wizard
+node ~/_CODING/hooks/pre-commit-hook/install.js --all        # All detected agents
+node ~/_CODING/hooks/pre-commit-hook/install.js --uninstall  # Remove all
 ```
 
 Supports: **Git** (native hook), **Claude Code** (PreToolUse), **Codex** (AGENTS.md instruction), **Gemini CLI** (GEMINI.md instruction), **Anvil** (.anvil instruction).
@@ -113,11 +130,13 @@ git commit --no-verify
 
 Cross-agent engineering contract enforcer. Installs a canonical, numbered rulebook (`engineering-contract.md`) and its mechanical checks so Claude Code, Anvil, Codex, and Gemini all obey the same rules. The PreToolUse hook blocks Write/Edit/Bash violations of §1 (hardcoding), §3 (symptom suppression), §6 (AI attribution), and §7 (destructive operations). Judgment sections (§2, §4, §5, §8) are enforced in code review. Every rule is citable as `CONTRACT §N`.
 
+Run from the project being installed into (or pass `--project=/path/to/repo`);
+the installer refuses to run from inside its own directory:
+
 ```bash
-cd contracts
-node install.js              # Interactive wizard
-node install.js --all        # All detected agents
-node install.js --uninstall  # Remove all
+node ~/_CODING/hooks/contracts/install.js              # Interactive wizard
+node ~/_CODING/hooks/contracts/install.js --all        # All detected agents
+node ~/_CODING/hooks/contracts/install.js --uninstall  # Remove all
 ```
 
 Supports: **Claude Code** (PreToolUse hook, deterministic), **Anvil** (CONTRACTS.md instruction), **Codex** (AGENTS.md instruction), **Gemini** (GEMINI.md instruction).
@@ -142,11 +161,13 @@ See [`quality-gate/README.md`](quality-gate/README.md) for full documentation.
 
 Deterministic plan quality gate. Blocks ExitPlanMode (Claude Code) and plan submission (Anvil) until the plan is refined through a senior engineering checklist. Uses a one-shot `refined_once: true` frontmatter stamp to prevent infinite loops.
 
+Run from the project being installed into (or pass `--project=/path/to/repo`);
+the installer refuses to run from inside its own directory:
+
 ```bash
-cd plan-refiner
-node install.js              # Interactive wizard
-node install.js --all        # All detected agents
-node install.js --uninstall  # Remove all
+node ~/_CODING/hooks/plan-refiner/install.js              # Interactive wizard
+node ~/_CODING/hooks/plan-refiner/install.js --all        # All detected agents
+node ~/_CODING/hooks/plan-refiner/install.js --uninstall  # Remove all
 ```
 
 Supports: **Claude Code** (PreToolUse hook, deterministic), **Anvil** (middleware, deterministic), **Codex** (AGENTS.md instruction), **Gemini** (GEMINI.md instruction).

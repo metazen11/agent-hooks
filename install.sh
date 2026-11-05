@@ -1,39 +1,14 @@
 #!/usr/bin/env bash
 #
-# Install git hooks from the hooks/ directory
+# install.sh — install the pre-commit git hook into the repository this is
+# run from.
 #
-# Usage: ./hooks/install.sh
+# Kept for existing callers of ./install.sh. It has no install logic of its
+# own: it delegates to pre-commit-hook/install.js --agent=git, which symlinks
+# <current directory>/.git/hooks/pre-commit to this repo's pre-commit script.
+# Extra arguments are passed through (e.g. --uninstall).
+#
+# Usage: /path/to/hooks/install.sh [--uninstall]    # from the target repo root
 #
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-GIT_HOOKS_DIR="$PROJECT_ROOT/.git/hooks"
-
-echo "Installing git hooks..."
-
-if [[ ! -d "$GIT_HOOKS_DIR" ]]; then
-  echo "Error: .git/hooks directory not found"
-  echo "Make sure you're in a git repository"
-  exit 1
-fi
-
-# Install each hook
-for hook in "$SCRIPT_DIR"/*; do
-  hook_name=$(basename "$hook")
-
-  # Skip install.sh and README
-  if [[ "$hook_name" == "install.sh" ]] || [[ "$hook_name" == "README.md" ]]; then
-    continue
-  fi
-
-  # Copy and make executable
-  cp "$hook" "$GIT_HOOKS_DIR/$hook_name"
-  chmod +x "$GIT_HOOKS_DIR/$hook_name"
-  echo "  Installed: $hook_name"
-done
-
-echo ""
-echo "Git hooks installed successfully!"
-echo ""
-echo "Hooks will run automatically on git operations."
-echo "To bypass a hook: git commit --no-verify"
+exec node "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pre-commit-hook/install.js" --agent=git "$@"

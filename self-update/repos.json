@@ -4,12 +4,12 @@
     {
       "slug": "agent-hooks",
       "path": "~/_CODING/hooks",
-      "branch": "dev"
+      "branch": "main"
     },
     {
       "slug": "agent-memory",
       "path": "~/_CODING/agentMemory",
-      "branch": "dev"
+      "branch": "main"
     },
     {
       "slug": "anvil",
