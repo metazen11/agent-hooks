@@ -76,7 +76,7 @@ mode, the last three are not.
 | branch has diverged (local commits) | needs a real reconcile, not a ff | reported, no command |
 | on the configured branch with no upstream | nothing to compare against | not reported |
 | rebase/merge/bisect in progress | another git operation owns the repo | not reported, not fetched |
-| fetch fails (offline) | state of the remote unknown | not reported |
+| fetch fails (offline, or `origin/<branch>` does not exist) | state of the remote unknown | not reported |
 
 It never merges non-ff, rebases, resets, stashes, or force-anythings. Network
 failure is non-fatal. Worst case: it does nothing and says so.

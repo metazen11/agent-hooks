@@ -114,8 +114,18 @@ function inspectRepo(repo, apply) {
         : git(dir, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
     if (!upstream) return res('skipped', 'no upstream tracking branch');
 
-    if (git(dir, ['fetch', '--quiet', '--prune', ...(offBranch ? ['origin'] : [])], 45000) === null) {
-        return res('skipped', 'fetch failed (offline?)');
+    // Off-branch, fetch exactly the ref we compare with: origin's configured
+    // refspec need not cover <branch> (single-branch clone), and a plain
+    // `git fetch origin` would then leave it stale and the checkout "current".
+    // The explicit refspec is also the only thing this fetch may write.
+    const fetched = offBranch
+        ? git(dir, ['fetch', '--quiet', '--no-tags', '--no-recurse-submodules', 'origin',
+            `+refs/heads/${branch}:refs/remotes/${upstream}`], 45000)
+        : git(dir, ['fetch', '--quiet', '--prune'], 45000);
+    if (fetched === null) {
+        return res('skipped', offBranch
+            ? `cannot fetch ${upstream} (offline, or no such branch on origin?)`
+            : 'fetch failed (offline?)');
     }
 
     const counts = git(dir, ['rev-list', '--left-right', '--count', `HEAD...${upstream}`]);

@@ -338,7 +338,7 @@ in-progress rebase/merge/bisect.
 - Throttle: `SELF_UPDATE_EVERY_HOURS` (default 24; `0` = always check)
 - Install: `node self-update/install.js [--hours N]`
 - Manual: `node self-update/self-update.js --check | --apply --now`
-- Tests: `./self-update/test-self-update.sh` (31 cases)
+- Tests: `./self-update/test-self-update.sh` (35 cases)
 
 ### memory-context (legacy)
 

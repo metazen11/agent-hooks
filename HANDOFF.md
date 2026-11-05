@@ -6,8 +6,9 @@
 
 - Root cause of self-update never reporting: `inspectRepo` returned `skipped` before fetching whenever HEAD was not the configured branch (and again on a dirty tree), and `git-session --session-start` moves every checkout onto `work/session-<date>`. With both hooks installed no watched repo could ever be "behind".
 - Notify mode now asks "does HEAD lack commits that are on `origin/<branch>`" whatever is checked out. Off-branch, dirty or diverged it reports the count and the reason and offers no command; only on-branch, clean and not diverged gets the `git merge --ff-only` line. The fetch is still the only side effect. An in-progress rebase/merge/bisect is still neither fetched nor reported.
-- `--apply` is unchanged: fast-forward only, same refusals, same messages. Test: `self-update/test-self-update.sh` (31 cases).
-- **Open follow-ups:** `--check` still reads the current branch's upstream, so off-branch it prints `no upstream` and no cached counts; `test-self-update.sh` writes its throttle state to the real `~/.claude/state/self-update/fx.json` (no `HOME` override) when run locally.
+- Off-branch the fetch names the ref it compares with (`+refs/heads/<branch>:refs/remotes/origin/<branch>`, `--no-tags`), because origin's configured refspec need not cover the branch (single-branch clone) and a plain `git fetch origin` then left `origin/<branch>` stale and the checkout "current". On-branch fetching is unchanged.
+- `--apply` is unchanged: fast-forward only, same refusals, same messages. Test: `self-update/test-self-update.sh` (35 cases).
+- **Open follow-up:** `--check` still reads the current branch's upstream, so off-branch it prints `no upstream` and no cached counts.
 
 ## 2026-10-25 - git-session never pushes (#33)
 

@@ -105,5 +105,28 @@ B=$(HEAD_OF); RUN --apply --now >/dev/null
 [ "$(HEAD_OF)" != "$B" ] && ok "fast-forwarded when clean+behind" || no "should have advanced"
 chk "  content correct"        "$(tr -d '\n' < "$TMP/w/f.txt")" "v1v2"
 
+# The remote's refspec need not cover the configured branch (single-branch
+# clone, narrowed refspec): a plain `git fetch origin` then leaves origin/dev
+# stale and the checkout looks current. Last, because it advances the remote.
+echo "off-branch fetch refreshes origin/<branch> itself (#44):"
+mkdir "$TMP/sb"; cp "$HOOK" "$TMP/sb/self-update.js"
+git clone -q "$TMP/remote.git" "$TMP/sb/w" 2>/dev/null
+git -C "$TMP/sb/w" checkout -q --no-track -b work/sb origin/dev
+git -C "$TMP/sb/w" config remote.origin.fetch '+refs/heads/work/*:refs/remotes/origin/work/*'
+( cd "$TMP/up"; echo v3 >> f.txt; git commit -qam v3; git tag t3; git push -q origin dev t3 )
+cat > "$TMP/sb/repos.json" <<JSON
+{"repos":[{"slug":"sb","path":"$TMP/sb/w","branch":"dev"},
+          {"slug":"nb","path":"$TMP/sb/w","branch":"nope"}]}
+JSON
+RUNSB(){ ( cd "$TMP/sb" && SELF_UPDATE_EVERY_HOURS=0 node self-update.js "$@" 2>&1 ); }
+# Everything the hook may NOT change: every ref but origin/dev (tags included), HEAD, tree.
+REST(){ git -C "$TMP/sb/w" for-each-ref | grep -v 'refs/remotes/origin/dev$'
+        git -C "$TMP/sb/w" rev-parse --abbrev-ref HEAD; git -C "$TMP/sb/w" status --porcelain; }
+B=$(REST); out=$(RUNSB --session-start)
+chk "narrowed refspec + behind reported"   "$(echo "$out" | grep -c "^- sb: 1 new commit on origin/dev; on 'work/sb', not 'dev'")" 1
+chk "  only origin/dev was written"        "$(REST)" "$B"
+chk "  branch missing on origin: silent"   "$(echo "$out" | grep -c '^- nb:')" 0
+chk "  ...and named in manual mode"        "$(RUNSB | grep -c '^  skipped  *nb  *cannot fetch origin/nope')" 1
+
 echo "────────────────────────────────"; echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
