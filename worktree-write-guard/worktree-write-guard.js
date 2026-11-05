@@ -152,12 +152,12 @@ function isSanctionedPath(absPath) {
 
 // For Bash: extract candidate write-target paths and detect write intent.
 // We don't try to parse bash — we look for the common patterns.
-function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, initialCwd) {
+function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, initialCwd, nested) {
     if (!command || typeof command !== 'string') return null;
 
     // Inspect shell segments independently. A path and a write verb elsewhere
     // in a prose/heredoc command must not combine into a false positive.
-    const sanitizedCommand = stripNonExecutableHereDocs(command);
+    const sanitizedCommand = stripNonExecutableHereDocs(command, nested);
     const repoPaths = extractRepoPaths(sanitizedCommand, repoRoot);
     const outsideRepoPaths = repoPaths.filter(candidate => !isInsideWorktree(candidate, worktreeRoot));
     if (/\bxargs\b/.test(sanitizedCommand) && outsideRepoPaths.length > 0 && /\b(?:rm|mv|cp|touch|mkdir|tee)\b/.test(sanitizedCommand)) {
@@ -180,7 +180,7 @@ function scanBashForOutOfWorktreeWrites(command, repoRoot, worktreeRoot, initial
         }
     }
     for (const body of nestedBodies) {
-        const result = scanBashForOutOfWorktreeWrites(body, repoRoot, worktreeRoot, effectiveCwd);
+        const result = scanBashForOutOfWorktreeWrites(body, repoRoot, worktreeRoot, effectiveCwd, true);
         if (result) return result;
     }
     return null;
@@ -263,15 +263,12 @@ function splitShellSegments(command) {
 // Keep executable heredocs (bash/sh/zsh/node) visible to the normal parser.
 // The lines kept below are the ones this function has always kept. A quoted body
 // is still dropped, but only when the heredoc is also provably inert
-// (inertHereDoc, on a line that starts with nothing open, outside a command
-// substitution). A body that would have been dropped and cannot be vouched for
-// is shown instead: defanged and put in front, where it is read on its own and
-// cannot change how any other line is read.
-let heredocStripCalls = 0;
-function stripNonExecutableHereDocs(cmd) {
-    // The first call sees the command. Later calls see command-substitution
-    // bodies, whose output the outer command may run (`eval "$(cat <<'EOF' ..)"`).
-    const nested = heredocStripCalls++ > 0;
+// (inertHereDoc, on a line that starts with nothing open). A body that would
+// have been dropped and cannot be vouched for is shown instead: defanged and put
+// in front, where it is read on its own and cannot change how any other line is
+// read. `nested` marks a command-substitution body: the outer command may run
+// its output (`eval "$(cat <<'EOF' ..)"`), so no body in it is vouched for.
+function stripNonExecutableHereDocs(cmd, nested) {
     const lines = String(cmd || '').split('\n');
     const out = [];
     const shown = [];

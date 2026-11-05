@@ -124,8 +124,8 @@ function deny(reason) {
  * wrappers (`env`, `sudo`) and aliases are NOT understood. The threat model is
  * accidental misuse, not an adversary (who can always use --force-anyway).
  */
-function splitSegments(cmd) {
-    cmd = stripNonExecutableHereDocs(cmd);
+function splitSegments(cmd, nested) {
+    cmd = stripNonExecutableHereDocs(cmd, nested);
     const segs = [];
     let tokens = [], cur = '', has = false, quote = null;
     const endTok = () => { if (cur !== '' || has) tokens.push(cur); cur = ''; has = false; };
@@ -149,7 +149,7 @@ function splitSegments(cmd) {
     }
     endSeg();
     for (const body of commandSubstitutions(cmd)) {
-        segs.push(...splitSegments(body));
+        segs.push(...splitSegments(body, true));
     }
     return segs;
 }
@@ -188,15 +188,12 @@ function commandSubstitutions(cmd) {
 // Keep executable heredocs (bash/sh/zsh/node) visible to the normal parser.
 // The lines kept below are the ones this function has always kept. A quoted body
 // is still dropped, but only when the heredoc is also provably inert
-// (inertHereDoc, on a line that starts with nothing open, outside a command
-// substitution). A body that would have been dropped and cannot be vouched for
-// is shown instead: defanged and put in front, where it is read on its own and
-// cannot change how any other line is read.
-let heredocStripCalls = 0;
-function stripNonExecutableHereDocs(cmd) {
-    // The first call sees the command. Later calls see command-substitution
-    // bodies, whose output the outer command may run (`eval "$(cat <<'EOF' ..)"`).
-    const nested = heredocStripCalls++ > 0;
+// (inertHereDoc, on a line that starts with nothing open). A body that would
+// have been dropped and cannot be vouched for is shown instead: defanged and put
+// in front, where it is read on its own and cannot change how any other line is
+// read. `nested` marks a command-substitution body: the outer command may run
+// its output (`eval "$(cat <<'EOF' ..)"`), so no body in it is vouched for.
+function stripNonExecutableHereDocs(cmd, nested) {
     const lines = String(cmd || '').split('\n');
     const out = [];
     const shown = [];
