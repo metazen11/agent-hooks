@@ -65,7 +65,9 @@ const GLOBAL_REQUIRED = [path.join(HOME, '.claude', 'CLAUDE.md')];
 
 // Project-relative candidates. Discovered at the project root and at the cwd.
 // Only files that EXIST are required — a repo without coding_requirements.md is
-// not forced to have one.
+// not forced to have one. MUSE_ONBOARDING.md is the 60-sec front door for
+// Muse (and any new agent) — it MUST be read before any tool use, so it is
+// a required candidate wherever it exists (Durable onboarding, 2026-11-21).
 const PROJECT_CANDIDATES = [
     'CLAUDE.md',
     'AGENTS.md',
@@ -74,6 +76,9 @@ const PROJECT_CANDIDATES = [
     'CONTRIBUTING.md',
     path.join('docs', 'coding-standards.md'),
     '.autonomous.json',
+    path.join('docs', 'MUSE_ONBOARDING.md'),
+    path.join('docs', 'START_HERE.md'),
+    path.join('docs', 'AGENT_ONBOARDING_LESSONS.md'),
 ];
 
 // Tool calls that PERFORM WORK. Only these are eligible for the safety-net gate.
