@@ -69,7 +69,7 @@ validated at boundaries, docs updated alongside the code. Code without updated
 docs is not done.
 
 ### OPTIMIZE
-Always optimize tests and token usage. This is contractual: keep the suite at same-level (no coverage cut, no heavy/crypto skip) but make it fast via per-worktree DB isolation, deletion of superseded legacy tests (shim kept for helpers), and terse prompts that carry evidence (links, not dumps). Token and time are cost; ponytail's lean rule is the same — shortest working diff that is still readable. A slow suite that still runs is not optimized.
+Always optimize tests and token usage. This is contractual: keep the suite at same-level (no coverage cut, no heavy/crypto skip) but make it **local-first** (per-worktree DB, not CI) and **concise e2e** (one live flow test proves reconcile+routing+promotion, not N fragments), plus superseded cut (shim kept) and terse prompts via links not dumps. Token and time are cost; ponytail lean — shortest working diff that is still readable.
 
 ### VERIFY
 "I made the change" is not done. "It should work" is not done. Done means the
