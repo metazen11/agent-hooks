@@ -164,7 +164,7 @@ eq "$(node -e 'process.stdout.write(require(process.argv[1]).trunkRef(process.ar
 # gh fallback: PR MERGED with a head containing our HEAD (tree check cannot prove it here)
 wtadd ghb; echo z > "$R/.worktrees/ghb/g"; git -C "$R/.worktrees/ghb" add g; git -C "$R/.worktrees/ghb" commit -q -m "ghb"
 mkdir -p "$T/bin"; ghsha=$(git -C "$R/.worktrees/ghb" rev-parse HEAD)
-printf '#!/bin/sh\nif [ "$4" = ghb ]; then echo '"'"'[{"headRefOid":"%s"}]'"'"'; else echo "[]"; fi\n' "$ghsha" > "$T/bin/gh"; chmod +x "$T/bin/gh"
+printf '#!/bin/sh\nif [ "$4" = ghb ]; then echo '"'"'[{"headRefOid":"%s","mergeCommit":{"oid":"%s"}}]'"'"'; else echo "[]"; fi\n' "$ghsha" "$(git -C "$R" rev-parse origin/main)" > "$T/bin/gh"; chmod +x "$T/bin/gh"
 eq "$(count)" "ghb,keep" "no gh => merged-PR branch still unlanded (fails closed)"
 eq "$(PATH="$T/bin:$PATH" count)" "keep" "gh MERGED PR containing HEAD => landed"
 git -C "$R/.worktrees/ghb" commit -q --allow-empty -m "after merge"

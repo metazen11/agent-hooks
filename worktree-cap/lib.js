@@ -152,18 +152,21 @@ function markerState(root, wtPath, head) {
 /**
  * Squash-landed: a squash merge never makes the branch an ancestor of trunk, so `ahead`
  * stays > 0 forever. Landed when (a) merging HEAD into trunk is a no-op (its changes are
- * already in trunk's tree), or (b) gh reports a MERGED PR for the branch whose head
- * contains this HEAD. Anything unprovable (no gh, offline, conflict) is NOT landed.
+ * already in trunk's tree), or (b) gh reports a MERGED PR INTO the trunk for the branch whose head
+ * contains this HEAD and whose merge commit is in the trunk. Anything unprovable (no gh, offline, conflict) is NOT landed.
  */
 function squashLanded(wtPath, trunk, branch, head) {
     const t = tryGit(wtPath, ['merge-tree', '--write-tree', trunk, head]);
     if (t && t === tryGit(wtPath, ['rev-parse', `${trunk}^{tree}`])) return true;
     if (branch === '(detached)') return false;
     try {
-        const out = execFileSync('gh', ['pr', 'list', '--head', branch, '--state', 'merged', '--json', 'headRefOid', '--limit', '10'],
+        // Only a PR INTO the trunk counts, and its merge commit must be in the trunk: a PR merged into develop or
+        // another feature branch landed nothing on the trunk.
+        const out = execFileSync('gh', ['pr', 'list', '--head', branch, '--base', trunk.replace(/^origin\//, ''), '--state', 'merged', '--json', 'headRefOid,mergeCommit', '--limit', '10'],
             { cwd: wtPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
-        return JSON.parse(out).some((pr) => SHA40.test(pr.headRefOid) &&
-            tryGit(wtPath, ['merge-base', '--is-ancestor', head, pr.headRefOid]) !== null);
+        return JSON.parse(out).some((pr) => SHA40.test(pr.headRefOid) && pr.mergeCommit && SHA40.test(pr.mergeCommit.oid) &&
+            tryGit(wtPath, ['merge-base', '--is-ancestor', head, pr.headRefOid]) !== null &&
+            tryGit(wtPath, ['merge-base', '--is-ancestor', pr.mergeCommit.oid, trunk]) !== null);
     } catch { return false; }
 }
 
