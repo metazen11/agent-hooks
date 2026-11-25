@@ -328,7 +328,7 @@ Other agents (Codex, Anvil, future Claude sessions) read code cold. They lack th
 
 ### Consequences of Breach
 - Unassigned or overlapping writes — stop, inspect the diff, and coordinate ownership before continuing.
-- A worktree request at the cap or with dirty/unlanded existing worktrees is denied; follow `/reconcile` and remove only a verified merged, clean, inactive checkout.
+- A worktree request at the cap or with dirty/unlanded existing worktrees is denied; preserve and resolve dirty changes first, verify origin policy read-only, then follow the matching feature-PR or `/reconcile` path. Remove only a verified merged, clean, inactive checkout.
 - Direct writes to `main`/`master`/`prod` from a subagent are treated as a critical breach; the orchestrator MUST revert and re-run through the proper working-branch flow.
 
 ### Corollary — Branch Discipline

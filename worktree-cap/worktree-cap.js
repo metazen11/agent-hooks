@@ -153,14 +153,22 @@ function landedOnIntegration(pathname, target, aheadCount) {
   return trunkIds ? trunkIds.includes(branchIds[0]) : null;
 }
 
+function landingGuidance(target) {
+  const branch = target.replace(/^refs\/remotes\/origin\//, '');
+  if (branch === 'main' || branch === 'master') {
+    return `For this single-trunk repository, land clean work through a feature-branch squash PR to ${branch}; do not reconcile to a dev branch.`;
+  }
+  return `For this legacy two-trunk repository, after the checkout is clean, run /reconcile to ${branch}.`;
+}
+
 function worktreeAdmission(common) {
   const entries = worktreeEntries(common);
   if (!entries) return 'Cannot reliably inspect linked worktrees; creation is denied.';
   if (entries.length >= CAP) return `Worktree cap reached (${entries.length}/${CAP}) for this repository.`;
+  const target = integrationRef(common);
+  if (!target) return 'Cannot verify this repository’s authorized integration trunk from current origin refs and policy; inspect origin and the committed policy read-only, then retry only after they are unambiguous.';
   const nonPrimary = entries.slice(1);
   if (!nonPrimary.length) return null;
-  const target = integrationRef(common);
-  if (!target) return 'Cannot verify this repository’s authorized integration trunk from current origin refs and policy; run /reconcile and resolve the policy/readback first.';
   const unresolved = [];
   for (const entry of nonPrimary) {
     const status = runGit(['-C', entry.path, 'status', '--porcelain', '--untracked-files=all'], entry.path);
@@ -178,7 +186,7 @@ function worktreeAdmission(common) {
     }
   }
   return unresolved.length
-    ? `Unresolved worktrees block creation: ${unresolved.join('; ')}. Run /reconcile, resolve CI/review/audit/conflict blockers, and remove only a verified merged, clean, inactive checkout.`
+    ? `Unresolved worktrees block creation: ${unresolved.join('; ')}. Preserve and resolve dirty changes first; inspect unavailable status or origin policy read-only. Once relevant checkouts are clean and origin policy is verified, ${landingGuidance(target)} Resolve CI/review/audit/conflict blockers; remove only a verified merged, clean, inactive checkout.`
     : null;
 }
 

@@ -15,13 +15,18 @@ still empty. The lock directory is `0700` and its owner file is `0600`.
 
 On installed hook paths, the hook counts every `git worktree list --porcelain`
 entry for the repository being targeted, including the primary checkout. The
-limit is five total worktrees. Before allowing another checkout, it also checks
-every non-primary checkout for uncommitted changes and commits not present on
-the repository's verified integration trunk. Dirty or unlanded checkouts block
-creation and identify the path; resolve them through `/reconcile` and clear CI,
-review, audit, or conflict blockers first. The guard never merges, pushes a
-trunk, creates `dev`/`develop`, or removes a checkout. It denies when the
-repository, count, branching policy, or current remote readback cannot be
+limit is five total worktrees. Before allowing another checkout, it verifies
+origin and the committed branching policy even when the primary checkout is the
+only one present; it also checks every non-primary checkout for uncommitted
+changes and commits not present on the verified policy trunk. Dirty or
+unlanded checkouts block creation and identify the path. Preserve dirty work
+and resolve it first; inspect uncertain status or policy read-only. After the
+affected checkouts are clean and policy is verified, single-trunk repositories
+land through a feature-branch squash PR to `main`/`master`; legacy two-trunk
+repositories use `/reconcile` to the unique verified `dev`/`develop`. Clear CI,
+review, audit, or conflict blockers before retrying. The guard never merges,
+pushes a trunk, creates `dev`/`develop`, or removes a checkout. It denies when
+the repository, count, branching policy, or current remote readback cannot be
 determined. Claude's native
 `WorktreeCreate` handler creates the worktree itself under
 `~/.claude/worktrees/<repository>/<name>` because that handler replaces

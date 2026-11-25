@@ -181,6 +181,12 @@ try {
   assert.equal(denial(primaryOnly), false, 'primary-only count is allowed and primary dirt is excluded from the reconcile blocker');
   post('primary-only-session');
 
+  authorize('primary-policy-unverified-session');
+  const primaryPolicyUnverified = preflight('primary-policy-unverified-session', turn, {}, {
+    WORKTREE_TEST_COUNT: '1', WORKTREE_TEST_MODE: 'remote-unavailable',
+  });
+  assert.equal(denial(primaryPolicyUnverified), true, 'primary-only repository still requires verified origin policy');
+
   authorize('dirty-primary-session');
   assert.equal(denial(preflight('dirty-primary-session', turn, {}, { WORKTREE_TEST_DIRTY_PATH: path.join(temp, 'wt-0') })), false,
     'primary worktree dirt does not block a new checkout');
@@ -195,7 +201,18 @@ try {
   authorize('unlanded-child-session');
   const unlandedChild = preflight('unlanded-child-session', turn, {}, { WORKTREE_TEST_AHEAD_PATH: path.join(temp, 'wt-2') });
   assert.equal(denial(unlandedChild), true, 'unlanded non-primary commits block a new checkout');
-  assert.match(output(unlandedChild).hookSpecificOutput.permissionDecisionReason, /2 commit\(s\) not verified on refs\/remotes\/origin\/dev/);
+  const legacyUnlandedReason = output(unlandedChild).hookSpecificOutput.permissionDecisionReason;
+  assert.match(legacyUnlandedReason, /2 commit\(s\) not verified on refs\/remotes\/origin\/dev/);
+  assert.match(legacyUnlandedReason, /legacy two-trunk repository.*\/reconcile to dev/);
+
+  authorize('single-trunk-unlanded-session');
+  const singleTrunkUnlanded = preflight('single-trunk-unlanded-session', turn, {}, {
+    WORKTREE_TEST_POLICY: 'single-trunk', WORKTREE_TEST_AHEAD_PATH: path.join(temp, 'wt-1'),
+  });
+  assert.equal(denial(singleTrunkUnlanded), true);
+  const singleTrunkReason = output(singleTrunkUnlanded).hookSpecificOutput.permissionDecisionReason;
+  assert.match(singleTrunkReason, /single-trunk repository.*feature-branch squash PR to main/);
+  assert.doesNotMatch(singleTrunkReason, /\/reconcile/);
 
   authorize('merge-only-child-session');
   const mergeOnlyChild = preflight('merge-only-child-session', turn, {}, {
