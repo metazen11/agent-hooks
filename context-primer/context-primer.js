@@ -65,7 +65,9 @@ const GLOBAL_REQUIRED = [path.join(HOME, '.claude', 'CLAUDE.md')];
 
 // Project-relative candidates. Discovered at the project root and at the cwd.
 // Only files that EXIST are required — a repo without coding_requirements.md is
-// not forced to have one.
+// not forced to have one. These candidates are injected by the Claude Code
+// context-primer only; other hosts use their own instruction and hook paths.
+// Project onboarding documents are included whenever they exist.
 const PROJECT_CANDIDATES = [
     'CLAUDE.md',
     'AGENTS.md',
@@ -74,6 +76,9 @@ const PROJECT_CANDIDATES = [
     'CONTRIBUTING.md',
     path.join('docs', 'coding-standards.md'),
     '.autonomous.json',
+    path.join('docs', 'MUSE_ONBOARDING.md'),
+    path.join('docs', 'START_HERE.md'),
+    path.join('docs', 'AGENT_ONBOARDING_LESSONS.md'),
 ];
 
 // Tool calls that PERFORM WORK. Only these are eligible for the safety-net gate.
@@ -84,6 +89,7 @@ const STATE_DIR = path.join(os.tmpdir(), 'context-primer');
 
 // Cap injected content so a giant CLAUDE.md can't blow the context budget.
 const MAX_BYTES_PER_FILE = 24 * 1024;
+const FULL_CONTEXT_SUFFIXES = [path.join('docs', 'AGENT_ONBOARDING_LESSONS.md')];
 
 // ── stdin / output ───────────────────────────────────────────
 
@@ -183,7 +189,8 @@ function safeExists(p) {
 function readClipped(p) {
     try {
         const buf = fs.readFileSync(p);
-        if (buf.length <= MAX_BYTES_PER_FILE) return buf.toString('utf8');
+        const requiredFullFile = FULL_CONTEXT_SUFFIXES.some(suffix => path.resolve(p).endsWith(`${path.sep}${suffix}`));
+        if (buf.length <= MAX_BYTES_PER_FILE || requiredFullFile) return buf.toString('utf8');
         return buf.slice(0, MAX_BYTES_PER_FILE).toString('utf8') +
             `\n\n…[truncated at ${MAX_BYTES_PER_FILE} bytes — Read ${p} for the full file]`;
     } catch {

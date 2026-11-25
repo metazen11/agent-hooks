@@ -19,6 +19,8 @@ echo "PROJECT-CLAUDE-BODY" > "$TMP/proj/CLAUDE.md"
 echo "SUB-CLAUDE-BODY" > "$TMP/proj/sub/CLAUDE.md"
 echo "AGENTS-BODY" > "$TMP/proj/AGENTS.md"
 echo "CODING-REQ-BODY" > "$TMP/proj/coding_requirements.md"
+mkdir -p "$TMP/proj/docs"
+python3 -c 'print("L" * (25 * 1024) + "ONBOARDING-LESSONS-TAIL")' > "$TMP/proj/docs/AGENT_ONBOARDING_LESSONS.md"
 export TMPDIR="$TMP/state"
 
 echo "context-primer tests"; echo "────────────────────────────────"
@@ -31,6 +33,8 @@ lacks "no BEGIN marker for cwd CLAUDE.md"        "$out" "BEGIN $TMP/proj/sub/CLA
 lacks "no CLAUDE body text"                      "$out" "CLAUDE-BODY"
 has   "AGENTS.md still injected"                 "$out" "AGENTS-BODY"
 has   "coding_requirements.md still injected"    "$out" "CODING-REQ-BODY"
+has   "oversized required onboarding lessons are complete" "$out" "ONBOARDING-LESSONS-TAIL"
+lacks "oversized onboarding lessons are not clipped" "$out" "truncated at 24576 bytes"
 
 echo "reprime (turn 50):"
 node -e 'const l=[];for(let i=0;i<50;i++)l.push(JSON.stringify({type:"user",message:{role:"user",content:"hi"}}));require("fs").writeFileSync(process.argv[1],l.join("\n")+"\n")' "$TMP/t.jsonl"
