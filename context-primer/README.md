@@ -1,5 +1,9 @@
 # context-primer
 
+This module is a Claude Code hook. It does not register Codex, Muse, Anvil,
+Gemini, or subagent lifecycle hooks; those hosts use their own instruction and
+hook integrations.
+
 Forces the required instruction files into context **before** Claude starts any
 work, and gates work-performing tool calls until those files are loaded.
 
@@ -36,10 +40,14 @@ Discovered relative to the project root (nearest `.git` ancestor) and the cwd:
 - **Project instruction files:** `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`
 - **Coding requirements:** `coding_requirements.md`, `CONTRIBUTING.md`,
   `docs/coding-standards.md`, `.autonomous.json`
+- **Project onboarding:** `docs/MUSE_ONBOARDING.md`, `docs/START_HERE.md`,
+  `docs/AGENT_ONBOARDING_LESSONS.md`
 - **Autonomous-agents contracts (global, always):** `~/.claude/CLAUDE.md`
 
-Only files that exist are required. Each file is clipped to 24 KB in the
-injection (the full file is still on disk to Read).
+Only files that exist are required. Ordinary files are clipped to 24 KB in the
+injection (the full file is still on disk to Read). The required
+`docs/AGENT_ONBOARDING_LESSONS.md` file is injected in full because treating a
+clipped copy as complete would falsely mark the session primed.
 
 ## Install
 

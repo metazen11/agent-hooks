@@ -437,6 +437,27 @@ try {
   assert.notEqual(capFailure.status, 0, 'native creation rejects at cap');
   assert.equal(fs.existsSync(staleLock), false, 'native failure releases repo lock');
 
+  const freshCodex = installerFixture();
+  fs.unlinkSync(path.join(freshCodex.codexDir, 'hooks.json'));
+  const freshCodexInstall = freshCodex.run();
+  assert.equal(freshCodexInstall.status, 0, freshCodexInstall.stderr);
+  const createdCodexConfig = path.join(freshCodex.codexDir, 'hooks.json');
+  const createdCodex = JSON.parse(fs.readFileSync(createdCodexConfig, 'utf8'));
+  assert(createdCodex.hooks.PreToolUse.some(group => group.matcher === 'spawn_agent|Agent|Task|Bash'));
+  assert.equal(fs.statSync(createdCodexConfig).mode & 0o777, 0o600, 'new Codex hooks config uses private permissions');
+  assert.equal(fs.realpathSync(freshCodex.codexLink), fs.realpathSync(hook));
+
+  const missingCodexConflict = installerFixture();
+  fs.unlinkSync(path.join(missingCodexConflict.codexDir, 'hooks.json'));
+  fs.mkdirSync(path.dirname(missingCodexConflict.codexLink), { recursive: true });
+  fs.writeFileSync(missingCodexConflict.codexLink, 'operator-owned file');
+  const conflictClaude = fs.readFileSync(path.join(missingCodexConflict.claudeDir, 'settings.json'));
+  assert.notEqual(missingCodexConflict.run().status, 0, 'conflicting Codex hook path aborts fresh install');
+  assert.deepEqual(fs.readFileSync(path.join(missingCodexConflict.claudeDir, 'settings.json')), conflictClaude);
+  assert.equal(fs.existsSync(missingCodexConflict.claudeLink), false, 'fresh-install failure removes the newly created Claude link');
+  assert.equal(fs.readFileSync(missingCodexConflict.codexLink, 'utf8'), 'operator-owned file');
+  assert.equal(fs.existsSync(path.join(missingCodexConflict.codexDir, 'hooks.json')), false);
+
   const fixture = installerFixture();
   const firstInstall = fixture.run();
   assert.equal(firstInstall.status, 0, firstInstall.stderr);
@@ -470,6 +491,20 @@ try {
   assert.deepEqual(fs.readFileSync(path.join(rollback.claudeDir, 'settings.json')), rollbackClaude, 'first settings write rolls back');
   assert.deepEqual(fs.readFileSync(path.join(rollback.codexDir, 'hooks.json')), rollbackCodex, 'second settings remain intact');
   assert.equal(fs.existsSync(rollback.claudeLink), false, 'new symlink is removed after rollback');
+
+  const missingCodexRollback = installerFixture();
+  fs.unlinkSync(path.join(missingCodexRollback.codexDir, 'hooks.json'));
+  const missingRollbackClaude = fs.readFileSync(path.join(missingCodexRollback.claudeDir, 'settings.json'));
+  assert.notEqual(missingCodexRollback.failSecondWrite().status, 0, 'failed install with absent Codex config is reported');
+  assert.deepEqual(fs.readFileSync(path.join(missingCodexRollback.claudeDir, 'settings.json')), missingRollbackClaude);
+  assert.equal(fs.existsSync(path.join(missingCodexRollback.codexDir, 'hooks.json')), false, 'rollback removes a newly created Codex config');
+  assert.equal(fs.existsSync(missingCodexRollback.codexLink), false);
+  assert.equal(fs.readdirSync(missingCodexRollback.codexDir).some(name => name.endsWith('.tmp')), false, 'rollback removes the failed atomic-write temp file');
+
+  const occupiedTemp = installerFixture();
+  const occupiedTempScript = `const fs=require('node:fs'); const path=require('node:path'); const config=${JSON.stringify(path.join(occupiedTemp.codexDir, 'hooks.json'))}; const temp=config+'.'+process.pid+'.tmp'; fs.writeFileSync(temp,'operator-owned temp',{flag:'wx'}); process.env.HOME=${JSON.stringify(occupiedTemp.home)}; process.env.XDG_STATE_HOME=${JSON.stringify(path.join(occupiedTemp.home, '.state'))}; const installer=require(${JSON.stringify(path.join(__dirname, 'install.js'))}); try { installer.install(); process.exitCode=1; } catch (e) { if (e.code==='EEXIST' && fs.readFileSync(temp,'utf8')==='operator-owned temp') process.exitCode=0; else { console.error(e.message); process.exitCode=2; } }`;
+  const occupiedTempResult = spawnSync(process.execPath, ['-e', occupiedTempScript], { env: process.env, encoding: 'utf8' });
+  assert.equal(occupiedTempResult.status, 0, occupiedTempResult.stderr || 'installer preserves a pre-existing atomic-write temp file');
 
   const incomplete = installerFixture();
   const failedInstall = incomplete.failSecondWrite(true);

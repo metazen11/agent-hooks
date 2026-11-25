@@ -38,7 +38,12 @@ function regularConfigStat(file) {
 }
 
 function readConfig(file) {
-  const initialStat = regularConfigStat(file);
+  let initialStat;
+  try { initialStat = regularConfigStat(file); }
+  catch (error) {
+    if (error.code === 'ENOENT') return { original: null, parsed: {}, mode: 0o600 };
+    throw error;
+  }
   const original = fs.readFileSync(file);
   const finalStat = regularConfigStat(file);
   if (initialStat.dev !== finalStat.dev || initialStat.ino !== finalStat.ino) {
@@ -110,9 +115,26 @@ function verify(config, target) {
 
 function atomicWrite(file, content, mode) {
   const temp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(temp, content, { mode, flag: 'wx' });
-  fs.chmodSync(temp, mode);
-  fs.renameSync(temp, file);
+  let fd = null;
+  let created = false;
+  try {
+    fd = fs.openSync(temp, 'wx', mode);
+    created = true;
+    fs.writeFileSync(fd, content);
+    fs.fchmodSync(fd, mode);
+    fs.closeSync(fd);
+    fd = null;
+    fs.renameSync(temp, file);
+    created = false;
+  } catch (error) {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch (cleanup) { error.message += `; temp close failed: ${cleanup.message}`; }
+    }
+    if (created) {
+      try { fs.unlinkSync(temp); } catch (cleanup) { if (cleanup.code !== 'ENOENT') error.message += `; temp cleanup failed: ${cleanup.message}`; }
+    }
+    throw error;
+  }
 }
 
 function backup(file, bytes) {
@@ -155,6 +177,11 @@ function withInstallerLock(action) {
 }
 
 function assertSnapshot(file, expected, stage) {
+  if (expected === null) {
+    try { fs.lstatSync(file); }
+    catch (error) { if (error.code === 'ENOENT') return; throw error; }
+    throw new Error(`Settings changed during ${stage}; refusing to overwrite ${file}`);
+  }
   let actual;
   try { actual = fs.readFileSync(file); }
   catch (error) { throw new Error(`Settings changed during ${stage}; refusing to overwrite ${file}: ${error.message}`); }
@@ -162,9 +189,9 @@ function assertSnapshot(file, expected, stage) {
 }
 
 function writeFromSnapshot(row, expectedBefore, content, stage) {
-  regularConfigStat(row.target.config);
+  if (expectedBefore !== null) regularConfigStat(row.target.config);
   assertSnapshot(row.target.config, expectedBefore, stage);
-  regularConfigStat(row.target.config);
+  if (expectedBefore !== null) regularConfigStat(row.target.config);
   atomicWrite(row.target.config, content, row.mode);
   regularConfigStat(row.target.config);
   assertSnapshot(row.target.config, content, `${stage} readback`);
@@ -231,6 +258,19 @@ function restoreConfigSnapshots(rows) {
   const failures = [];
   for (const row of [...rows].reverse()) {
     try {
+      if (row.original === null) {
+        let stat;
+        try { stat = fs.lstatSync(row.target.config); }
+        catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+        if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`${row.target.config} is no longer a regular file`);
+        const current = fs.readFileSync(row.target.config);
+        if (!row.writtenBytes || !current.equals(row.writtenBytes)) {
+          failures.push(`${row.target.config} changed concurrently; rollback left it untouched`);
+          continue;
+        }
+        fs.unlinkSync(row.target.config);
+        continue;
+      }
       const current = fs.readFileSync(row.target.config);
       if (current.equals(row.original)) continue;
       if (!row.writtenBytes || !current.equals(row.writtenBytes)) {
@@ -242,10 +282,24 @@ function restoreConfigSnapshots(rows) {
   }
   for (const row of rows) {
     try {
+      if (row.original === null) {
+        try { fs.lstatSync(row.target.config); failures.push(`${row.target.config} rollback should have removed newly created config`); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        continue;
+      }
       if (!fs.readFileSync(row.target.config).equals(row.original)) failures.push(`${row.target.config} readback does not match its backup`);
     } catch (error) { failures.push(`${row.target.config} readback failed: ${error.message}`); }
   }
   return failures;
+}
+
+function matchesConfigSnapshot(file, expected) {
+  try {
+    if (expected === null) { fs.lstatSync(file); return false; }
+    return fs.readFileSync(file).equals(expected);
+  } catch (error) {
+    return expected === null && error.code === 'ENOENT';
+  }
 }
 
 function ensureLinksForRegistrations() {
@@ -279,7 +333,9 @@ function installTransaction() {
     return { ...row, next, changed: JSON.stringify(row.parsed) !== JSON.stringify(next) };
   });
   const backedUp = [];
-  if (changed.some(item => item.changed)) for (const row of changed) backedUp.push(backup(row.target.config, row.original));
+  if (changed.some(item => item.changed)) for (const row of changed) {
+    if (row.original !== null) backedUp.push(backup(row.target.config, row.original));
+  }
   try {
     for (const target of targets) ensureLink(target);
     const written = [];
@@ -312,9 +368,7 @@ function installTransaction() {
       throw error;
     }
   } catch (error) {
-    const configsUnchanged = changed.every(row => {
-      try { return fs.readFileSync(row.target.config).equals(row.original); } catch { return false; }
-    });
+    const configsUnchanged = changed.every(row => matchesConfigSnapshot(row.target.config, row.original));
     if (configsUnchanged) {
       const linkFailures = restoreLinkStates(priorLinks);
       if (linkFailures.length) {
