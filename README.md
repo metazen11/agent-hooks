@@ -266,7 +266,7 @@ node install.js --uninstall [--project DIR] [--anvil DIR]
 bash test-worktree-cap.sh                # 87 checks incl. one smoke per adapter
 ```
 
-Enforcement: **Claude** hard (hooks). **Codex** hard for direct `git worktree add` via exec-policy, advisory for session report/Stop. **Anvil** advisory (instructions + `cli.js add` wrapper). Squash merges leave commits "ahead", so remove a worktree after landing (the block message says how).
+Enforcement: **Claude** hard (hooks). **Codex** hard for direct `git worktree add` via exec-policy, advisory for session report/Stop. **Anvil** advisory (instructions + `cli.js add` wrapper). Landing trunk is the repo's `origin/HEAD` target (else origin/dev|develop|main|master). A squash-landed worktree (its changes already in the trunk tree, or `gh pr list --head <branch> --state merged` returns a PR whose head contains HEAD) is not counted as unlanded; unprovable cases (no gh, offline, conflict) stay unlanded. Still remove the worktree after landing.
 
 ### dispatch-gate
 

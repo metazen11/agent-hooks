@@ -35,8 +35,15 @@ function repoRoot(cwd) {
     return m ? m[1] : null;
 }
 
-/** Integration trunk: origin/dev|develop else origin/main|master (local branch only if no remote ref). */
+/**
+ * Landing trunk: the repo's own origin/HEAD target when set (so a repo that lands on main
+ * is not judged against a stale origin/develop), else origin/dev|develop|main|master
+ * (local branch only if no remote ref).
+ */
 function trunkRef(root) {
+    const head = tryGit(root, ['symbolic-ref', '-q', 'refs/remotes/origin/HEAD']);
+    const m = head && head.match(/^refs\/remotes\/(origin\/[\w.\/-]+)$/);
+    if (m && tryGit(root, ['rev-parse', '--verify', '-q', `${m[1]}^{commit}`]) !== null) return m[1];
     for (const prefix of ['origin/', '']) {
         for (const t of TRUNKS) {
             if (tryGit(root, ['rev-parse', '--verify', '-q', `${prefix}${t}^{commit}`]) !== null) return prefix + t;
@@ -143,6 +150,24 @@ function markerState(root, wtPath, head) {
 }
 
 /**
+ * Squash-landed: a squash merge never makes the branch an ancestor of trunk, so `ahead`
+ * stays > 0 forever. Landed when (a) merging HEAD into trunk is a no-op (its changes are
+ * already in trunk's tree), or (b) gh reports a MERGED PR for the branch whose head
+ * contains this HEAD. Anything unprovable (no gh, offline, conflict) is NOT landed.
+ */
+function squashLanded(wtPath, trunk, branch, head) {
+    const t = tryGit(wtPath, ['merge-tree', '--write-tree', trunk, head]);
+    if (t && t === tryGit(wtPath, ['rev-parse', `${trunk}^{tree}`])) return true;
+    if (branch === '(detached)') return false;
+    try {
+        const out = execFileSync('gh', ['pr', 'list', '--head', branch, '--state', 'merged', '--json', 'headRefOid', '--limit', '10'],
+            { cwd: wtPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
+        return JSON.parse(out).some((pr) => SHA40.test(pr.headRefOid) &&
+            tryGit(wtPath, ['merge-base', '--is-ancestor', head, pr.headRefOid]) !== null);
+    } catch { return false; }
+}
+
+/**
  * Agent worktrees of the repo at `root`, classified:
  *   unlanded - HEAD has commits not in trunk (work that could be lost)
  *   prunable - nothing ahead and last commit >= 7 days old
@@ -167,7 +192,7 @@ function scan(root, now = Math.floor(Date.now() / 1000)) {
         const ahead = trunk ? num(tryGit(p, ['rev-list', '--count', `${trunk}..HEAD`])) : NaN;
         const ts = num(tryGit(p, ['log', '-1', '--format=%ct']));
         const wt = { path: p, branch, ahead, age: now - ts, ...markerState(root, p, head) };
-        if (ahead !== 0) result.unlanded.push(wt);
+        if (ahead !== 0 && !(ahead > 0 && squashLanded(p, trunk, branch, head))) result.unlanded.push(wt);
         else if (Number.isFinite(wt.age) && wt.age >= PRUNABLE_DAYS * 86400) result.prunable.push(wt);
     }
     return result;

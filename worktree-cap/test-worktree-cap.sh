@@ -17,7 +17,7 @@ newrepo() { # name -> repo with origin/main
   git -C "$T/$1" checkout -q -b main; git -C "$T/$1" commit -q --allow-empty -m init; git -C "$T/$1" push -q origin main 2>/dev/null
 }
 unlanded() { # repo name  -> worktree with 1 commit ahead of origin/main
-  git -C "$1" worktree add -q -b "$2" "$1/.worktrees/$2" origin/main; git -C "$1/.worktrees/$2" commit -q --allow-empty -m "w $2"
+  git -C "$1" worktree add -q -b "$2" "$1/.worktrees/$2" origin/main; echo "$2" > "$1/.worktrees/$2/$2.txt"; git -C "$1/.worktrees/$2" add -A; git -C "$1/.worktrees/$2" commit -q -m "w $2"  # real change: an empty commit is contained in trunk
 }
 hook() { # json -> stdout
   printf '%s' "$1" | node "$D/worktree-cap.js" 2>/dev/null
@@ -147,6 +147,28 @@ out=$(hook "$(bashj /tmp 'git -C $REPO worktree add x')"); has "$out" "cannot st
 out=$(hook "$(bashj /tmp 'cd $(pwd) && git worktree add x')"); has "$out" "cannot statically resolve" "dynamic cd fails closed"
 out=$(hook "$(bashj "$T/g" "echo 'git worktree add x'")"); eq "$out" "" "quoted text is not a command"
 out=$(hook "$(bashj "$T/g" 'git worktree list; git status')"); eq "$out" "" "other worktree subcommands allowed"
+
+# ── squash-landed worktrees are not "unlanded"; trunk follows origin/HEAD ──
+newrepo sqr; R="$T/sqr"; echo 9 > "$R/.worktree-cap"
+git -C "$R" push -q origin main:develop 2>/dev/null            # stale develop that is NOT the landing trunk
+wtadd() { git -C "$R" worktree add -q -b "$1" "$R/.worktrees/$1" origin/main; }
+wtadd sq; echo a > "$R/.worktrees/sq/f"
+git -C "$R/.worktrees/sq" add f; git -C "$R/.worktrees/sq" commit -q -m "feat sq"; echo b >> "$R/.worktrees/sq/f"; git -C "$R/.worktrees/sq" commit -qam "more sq"
+unlanded "$R" keep
+git -C "$R" fetch -q; git -C "$R" remote set-head origin main >/dev/null
+count() { node "$D/cli.js" check "$R" --json 2>/dev/null | node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8"));process.stdout.write(j.unlanded.map(w=>w.branch).sort().join(","))'; }
+eq "$(count)" "keep,sq" "unsquashed branch counts as unlanded"
+git -C "$R" checkout -q main; printf 'a\nb\n' > "$R/f"; git -C "$R" add f; git -C "$R" commit -q -m "squash (#1)"; git -C "$R" push -q origin main; git -C "$R" fetch -q
+eq "$(count)" "keep" "squash-landed branch (tree contained in trunk) not unlanded; unmerged one still is"
+eq "$(node -e 'process.stdout.write(require(process.argv[1]).trunkRef(process.argv[2])||"")' "$D/lib.js" "$R")" "origin/main" "trunk is origin/HEAD target, not origin/develop"
+# gh fallback: PR MERGED with a head containing our HEAD (tree check cannot prove it here)
+wtadd ghb; echo z > "$R/.worktrees/ghb/g"; git -C "$R/.worktrees/ghb" add g; git -C "$R/.worktrees/ghb" commit -q -m "ghb"
+mkdir -p "$T/bin"; ghsha=$(git -C "$R/.worktrees/ghb" rev-parse HEAD)
+printf '#!/bin/sh\nif [ "$4" = ghb ]; then echo '"'"'[{"headRefOid":"%s"}]'"'"'; else echo "[]"; fi\n' "$ghsha" > "$T/bin/gh"; chmod +x "$T/bin/gh"
+eq "$(count)" "ghb,keep" "no gh => merged-PR branch still unlanded (fails closed)"
+eq "$(PATH="$T/bin:$PATH" count)" "keep" "gh MERGED PR containing HEAD => landed"
+git -C "$R/.worktrees/ghb" commit -q --allow-empty -m "after merge"
+eq "$(PATH="$T/bin:$PATH" count)" "ghb,keep" "commit made after the PR head => unlanded again"
 
 # ── adapter smoke: Codex + Anvil via installer in scratch HOME/project ──
 H="$T/home"; mkdir -p "$H/.codex/rules" "$H/.claude" "$T/proj"; echo '{}' > "$H/.claude/settings.json"
