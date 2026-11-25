@@ -1,6 +1,6 @@
 ---
 name: engineering-contract
-version: 1.0.0
+version: 1.1.0
 status: active
 scope: cross-project, cross-agent
 parties:
@@ -304,32 +304,31 @@ Other agents (Codex, Anvil, future Claude sessions) read code cold. They lack th
 
 ---
 
-## §11 — Subagent Isolation
+## §11 — Assigned-Checkout Subagent Work
 
-**Enforcement:** judgment (mechanical stub possible via git hook).
+**Enforcement:** judgment + the global `worktree-cap` hook.
 
 ### Obligations
-- When the orchestrator delegates work to a subagent that will **write** files (Write, Edit, NotebookEdit) or run mutating commands, the subagent **MUST** operate in an isolated git worktree, container, or ephemeral copy of the repo — not the orchestrator's live working directory.
-- Read-only subagents (Explore, code-reviewer in read-only mode, security-auditor) **MAY** operate in the orchestrator's working directory since they cannot mutate state.
-- The orchestrator **MUST** reconcile each subagent's worktree into the *current working branch* — the branch the orchestrator was on when the delegation started (a session branch, a feature branch, or an integration branch — but never directly into `main`/`master`/`prod`) — as a discrete commit or merge, so contributions are:
-  1. **Reviewable independently** — one subagent's work can be reverted without touching another's
-  2. **Auditable** — the merge history shows which subagent produced which change
-  3. **Race-free** — parallel subagent writes cannot corrupt shared files
-- Parallel subagents whose write scopes might overlap **MUST** be given non-overlapping path scopes in their prompt, and **MUST** run in separate worktrees.
+- Agents **MUST** reuse the task's assigned existing checkout by default. The orchestrator records its path, branch, HEAD, dirty state, and file ownership before dispatch.
+- Subagents may write in that checkout when their assigned paths are bounded and disjoint. The orchestrator **MUST** name each agent's exact write scope and serialize any overlapping scope; a worktree is not the default isolation mechanism.
+- A new worktree requires an explicit owner request and the installed `worktree-cap` guard must verify fewer than five total registered worktrees, including the primary checkout, plus no dirty or unlanded non-primary worktree. If policy or current remote state cannot be verified, creation is denied. Hook coverage limits remain documented.
+- Read-only subagents (Explore, code-reviewer in read-only mode, security-auditor) **MAY** inspect the assigned checkout.
+- When an isolated checkout is explicitly authorized, the orchestrator **MUST** inspect and reconcile its contribution into the task's assigned working branch.
+- Parallel work remains reviewable and race-safe through explicit file ownership, serialized overlap, and orchestrator review, whether agents share a checkout or use a specifically authorized isolated checkout.
 
 ### Exceptions
-- Single-subagent delegations where no parallelism exists and the subagent writes a bounded, disjoint set of files (rule of thumb: <5 files, no shared config edits) **MAY** operate in the orchestrator's working directory.
-- Interactive tools (Bash for read-only inspection, Grep, Read) that do not mutate state.
-- Trivial one-shot subagent invocations (<3 tool calls) where worktree overhead dominates.
+- The owner may explicitly authorize a new worktree for concrete isolation needs, subject to the same cap and unresolved-work checks.
+- A platform that cannot safely share the assigned checkout may use a container or ephemeral copy; it must not register another Git worktree unless separately authorized.
+- Interactive read-only tools do not require a separate checkout.
 
 ### Evidence of Compliance
-- Subagent invocations for write-work use `isolation: "worktree"` when the harness supports it, or the prompt explicitly instructs the subagent to work in a designated ephemeral path.
-- Reconciliation into the current working branch happens through explicit orchestrator action (`git merge`, `git cherry-pick`, or PR), not through direct subagent writes to the shared tree.
-- The "current working branch" is whatever branch the orchestrator was on when the session started — it is never `main`, `master`, or `prod`. If the orchestrator finds itself on a protected branch, it MUST create a session branch first (the `git-session` hook does this automatically at SessionStart).
+- Dispatch records name the assigned checkout, branch/HEAD, exact non-overlapping write scopes, and active dirty-state constraints.
+- New worktree requests are checked by the canonical hook; its admission evidence covers the count, authorized integration trunk, and non-primary worktree states.
+- The orchestrator verifies resulting diffs in the assigned branch and resolves conflicts before commit or integration.
 
 ### Consequences of Breach
-- Parallel subagents corrupt shared files — the orchestrator MUST detect the conflict via `git status` before continuing.
-- Reviewer cites `§11` and requests a rewrite of the delegation to use isolation.
+- Unassigned or overlapping writes — stop, inspect the diff, and coordinate ownership before continuing.
+- A worktree request at the cap or with dirty/unlanded existing worktrees is denied; follow `/reconcile` and remove only a verified merged, clean, inactive checkout.
 - Direct writes to `main`/`master`/`prod` from a subagent are treated as a critical breach; the orchestrator MUST revert and re-run through the proper working-branch flow.
 
 ### Corollary — Branch Discipline
@@ -362,3 +361,7 @@ Not every good practice belongs in this contract. If a rule is:
 - Not mechanically flaggable **and** not consistently cited in reviews,
 
 it belongs in a separate `guidelines.md` document, not here. Contracts have teeth; guidelines have taste. Keep them distinct.
+
+## Changelog
+
+- 1.1.0 — Replaced default per-subagent worktree isolation with assigned-checkout reuse, disjoint write ownership, and a five-worktree/reconcile gate.

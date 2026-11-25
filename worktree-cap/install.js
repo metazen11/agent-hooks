@@ -29,15 +29,28 @@ const eventCommands = {
 function hookCommand(target, event, arg) { return `node "${target.link}" ${arg}`; }
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 
+function regularConfigStat(file) {
+  const stat = fs.lstatSync(file);
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error(`Refusing non-regular settings config (symlinks are unsupported): ${file}`);
+  }
+  return stat;
+}
+
 function readConfig(file) {
+  const initialStat = regularConfigStat(file);
   const original = fs.readFileSync(file);
+  const finalStat = regularConfigStat(file);
+  if (initialStat.dev !== finalStat.dev || initialStat.ino !== finalStat.ino) {
+    throw new Error(`Settings config changed while being read: ${file}`);
+  }
   const parsed = JSON.parse(original.toString('utf8'));
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`Invalid settings object: ${file}`);
   if (parsed.hooks !== undefined && (!parsed.hooks || typeof parsed.hooks !== 'object' || Array.isArray(parsed.hooks))) throw new Error(`Invalid hooks object: ${file}`);
   for (const [event, groups] of Object.entries(parsed.hooks || {})) {
     if (!Array.isArray(groups) || groups.some(group => !group || typeof group !== 'object' || Array.isArray(group) || !Array.isArray(group.hooks))) throw new Error(`Invalid ${event} hook groups: ${file}`);
   }
-  return { original, parsed, mode: fs.statSync(file).mode & 0o777 };
+  return { original, parsed, mode: initialStat.mode & 0o777 };
 }
 
 function hookEntries(config, event) {
@@ -149,8 +162,11 @@ function assertSnapshot(file, expected, stage) {
 }
 
 function writeFromSnapshot(row, expectedBefore, content, stage) {
+  regularConfigStat(row.target.config);
   assertSnapshot(row.target.config, expectedBefore, stage);
+  regularConfigStat(row.target.config);
   atomicWrite(row.target.config, content, row.mode);
+  regularConfigStat(row.target.config);
   assertSnapshot(row.target.config, content, `${stage} readback`);
 }
 

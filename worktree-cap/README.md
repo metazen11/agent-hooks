@@ -13,9 +13,16 @@ no installer is active before removing the lock directory. If writing the
 owner file fails, this process removes its newly created lock only if it is
 still empty. The lock directory is `0700` and its owner file is `0600`.
 
-On installed hook paths, the hook counts `git worktree list --porcelain`
-entries for the repository being targeted. It denies creation at five or more
-and denies when the repository or count cannot be determined. Claude's native
+On installed hook paths, the hook counts every `git worktree list --porcelain`
+entry for the repository being targeted, including the primary checkout. The
+limit is five total worktrees. Before allowing another checkout, it also checks
+every non-primary checkout for uncommitted changes and commits not present on
+the repository's verified integration trunk. Dirty or unlanded checkouts block
+creation and identify the path; resolve them through `/reconcile` and clear CI,
+review, audit, or conflict blockers first. The guard never merges, pushes a
+trunk, creates `dev`/`develop`, or removes a checkout. It denies when the
+repository, count, branching policy, or current remote readback cannot be
+determined. Claude's native
 `WorktreeCreate` handler creates the worktree itself under
 `~/.claude/worktrees/<repository>/<name>` because that handler replaces
 Claude's default Git worktree creation.
@@ -53,11 +60,39 @@ not an identity or complete process-level authorization boundary.
 - Arbitrary subprocesses, external Git clients, direct Git library calls,
   specialized tool routes that opt out of hooks, and application-level worktree
   operations without hook callbacks are outside this guarantee.
-- Shell command inspection is best effort. Shell aliases, multiline constructs,
+- Shell command inspection is best effort. Simple newline-separated commands
+  are tokenized; shell aliases, command substitution, complex multiline syntax,
   indirection, and generated commands may not be recognized.
+- Direct `git`, `command git`, and absolute Git executable paths are parsed;
+  explicit `--git-dir` paths select the counted repository. `GIT_DIR`,
+  `GIT_WORK_TREE`, or `GIT_COMMON_DIR` assignments on a direct add are refused
+  because their effective target cannot be safely inferred from the hook input.
+- Reconciliation checks trust `origin` only when the selected remote-tracking
+  trunk ref matches its current `ls-remote` SHA. Single-trunk mode requires the
+  committed `.reconcile-gate.json` marker; otherwise exactly one verified
+  `origin/dev` or `origin/develop` must exist. Offline or stale refs fail closed.
 - Claude's native worktree hook replaces its default creation behavior. The
   implementation deliberately supports the default Git-backed repository
   path only; other VCS backends are not supported.
 
 Settings are wired by the installer, not by hand. Re-run it after moving the
 canonical hooks checkout so the global symlinks point to the current source.
+The installer requires regular `settings.json` and `hooks.json` files and
+refuses symlinked config paths before changing either config or hook links;
+atomic replacement would otherwise replace the symlink instead of updating its
+target. If a host manages these files through symlinks, resolve that ownership
+at the host configuration layer before installing this guard.
+The installer lock serializes its own install/uninstall runs, not unrelated
+configuration managers; do not run it while another process is replacing or
+editing either settings file.
+
+### Host hook trust review
+
+After installation, inspect the host's registered hook entry and confirm its
+command resolves to the canonical `worktree-cap.js` path before accepting a
+host trust prompt. Review the command and event names in Codex `hooks.json` or
+Claude `settings.json`, then approve/trust the hook through that host's native
+review flow when prompted. The installer does not edit host trust stores or
+silently approve hooks; a successful install is not proof that the host has
+trusted or invoked the hook. Verify an actual hook callback in each host before
+relying on enforcement there.

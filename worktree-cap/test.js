@@ -6,23 +6,49 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
-const { ownerIntent } = require('./worktree-cap.js');
+const { ownerIntent, targetRepository, worktreeAdmission } = require('./worktree-cap.js');
 
 const hook = path.join(__dirname, 'worktree-cap.js');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'worktree-cap-test-'));
 const fakeBin = path.join(temp, 'bin');
 const state = path.join(temp, 'state');
 fs.mkdirSync(fakeBin);
+for (let i = 0; i < 8; i += 1) fs.mkdirSync(path.join(temp, `wt-${i}`));
 const fakeGit = path.join(fakeBin, 'git');
 fs.writeFileSync(fakeGit, `#!/bin/sh
 case "$*" in
   *"rev-parse --show-toplevel"*) printf '%s\\n' '${temp}' ;;
   *"rev-parse --git-common-dir"*) printf '%s\\n' "\${WORKTREE_TEST_COMMON:-${temp}/.git}" ;;
+  *"ls-remote origin refs/heads/main refs/heads/master refs/heads/dev refs/heads/develop"*)
+    if [ "$WORKTREE_TEST_MODE" = remote-unavailable ]; then exit 1; fi
+    if [ "$WORKTREE_TEST_MODE" = stale-origin ]; then
+      printf 'dddddddddddddddddddddddddddddddddddddddd\\trefs/heads/main\\n'
+      printf 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\\trefs/heads/dev\\n'
+    else
+      printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\trefs/heads/main\\n'
+      printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\\trefs/heads/dev\\n'
+    fi
+    if [ "$WORKTREE_TEST_MODE" = ambiguous-policy ]; then printf 'cccccccccccccccccccccccccccccccccccccccc\\trefs/heads/develop\\n'; fi ;;
+  *"rev-parse --verify --quiet refs/remotes/origin/main"*) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n' ;;
+  *"rev-parse --verify --quiet refs/remotes/origin/develop"*) if [ "$WORKTREE_TEST_MODE" = ambiguous-policy ]; then printf 'cccccccccccccccccccccccccccccccccccccccc\\n'; else exit 1; fi ;;
+  *"rev-parse --verify --quiet refs/remotes/origin/dev"*) printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\\n' ;;
+  *"symbolic-ref --quiet --short refs/remotes/origin/HEAD"*) printf 'origin/main\\n' ;;
+  *"show refs/remotes/origin/main:.reconcile-gate.json"*)
+    if [ "$WORKTREE_TEST_POLICY" = single-trunk ]; then printf '{"model":"single-trunk"}\\n';
+    elif [ "$WORKTREE_TEST_POLICY" = malformed ]; then printf '{broken\\n';
+    else exit 1; fi ;;
+  *"status --porcelain --untracked-files=all"*)
+    case "$*" in *"-C $WORKTREE_TEST_DIRTY_PATH status"*) printf '?? untracked.txt\\n';; esac ;;
+  *"rev-list --count --merges refs/remotes/origin/dev..HEAD"*)
+    case "$*" in *"-C $WORKTREE_TEST_MERGE_PATH rev-list"*) printf '1\\n';; *) printf '0\\n';; esac ;;
+  *"rev-list --count refs/remotes/origin/dev..HEAD"*|*"rev-list --count refs/remotes/origin/main..HEAD"*)
+    case "$*" in *"-C $WORKTREE_TEST_AHEAD_PATH rev-list"*) printf '2\\n';; *) printf '0\\n';; esac ;;
+  *"merge-base"*) printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n' ;;
   *"worktree list --porcelain"*)
     case "${'${WORKTREE_TEST_MODE:-normal}'}" in
       malformed) printf 'broken-record\\n';;
       missing) exit 1;;
-      *) count="${'${WORKTREE_TEST_COUNT:-4}' }"; if [ -n "$WORKTREE_TEST_COUNT_FILE" ]; then count=$(cat "$WORKTREE_TEST_COUNT_FILE"); fi; i=0; while [ "$i" -lt "$count" ]; do printf 'worktree /tmp/wt-%s\\nHEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n\\n' "$i"; i=$((i+1)); done ;;
+      *) count="${'${WORKTREE_TEST_COUNT:-4}' }"; if [ -n "$WORKTREE_TEST_COUNT_FILE" ]; then count=$(cat "$WORKTREE_TEST_COUNT_FILE"); fi; i=0; while [ "$i" -lt "$count" ]; do printf 'worktree ${temp}/wt-%s\\nHEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n\\n' "$i"; i=$((i+1)); done ;;
     esac ;;
   *) exit 0 ;;
 esac
@@ -130,13 +156,144 @@ function installerFixture() {
 
 async function runTests() {
 try {
+  const repoA = path.join(temp, 'repo-a');
+  const repoB = path.join(temp, 'repo-b');
+  assert.equal(targetRepository({ cwd: temp, tool_input: { command: `git -C ${repoA} -C ../repo-b worktree add ../new-wt` } }).cwd,
+    repoB, 'repeated relative -C resolves each path from the previous Git checkout');
+
   assert.equal(ownerIntent('Use an isolated worktree for this task.'), true, 'natural imperative owner request needs no special marker');
   assert.equal(ownerIntent('Should I create a worktree?'), false, 'a question does not authorize creation');
   authorize();
   const allowed = preflight();
   assert.equal(allowed.status, 0);
-  assert.equal(denial(allowed), false, 'count 4 is allowed');
+  assert.equal(denial(allowed), false, `count 4 is allowed: ${JSON.stringify(output(allowed))}`);
   post();
+
+  authorize('zero-count-session');
+  const zeroCount = preflight('zero-count-session', turn, {}, { WORKTREE_TEST_COUNT: '0' });
+  assert.equal(denial(zeroCount), false, 'count 0 is allowed by the explicit cap boundary');
+  post('zero-count-session');
+
+  authorize('primary-only-session');
+  const primaryOnly = preflight('primary-only-session', turn, {}, {
+    WORKTREE_TEST_COUNT: '1', WORKTREE_TEST_DIRTY_PATH: path.join(temp, 'wt-0'),
+  });
+  assert.equal(denial(primaryOnly), false, 'primary-only count is allowed and primary dirt is excluded from the reconcile blocker');
+  post('primary-only-session');
+
+  authorize('dirty-primary-session');
+  assert.equal(denial(preflight('dirty-primary-session', turn, {}, { WORKTREE_TEST_DIRTY_PATH: path.join(temp, 'wt-0') })), false,
+    'primary worktree dirt does not block a new checkout');
+  post('dirty-primary-session');
+
+  authorize('dirty-child-session');
+  const dirtyPath = path.join(temp, 'wt-1');
+  const dirtyChild = preflight('dirty-child-session', turn, {}, { WORKTREE_TEST_DIRTY_PATH: dirtyPath });
+  assert.equal(denial(dirtyChild), true, 'dirty non-primary worktree blocks a new checkout');
+  assert.ok(output(dirtyChild).hookSpecificOutput.permissionDecisionReason.includes(`${dirtyPath} (dirty)`));
+
+  authorize('unlanded-child-session');
+  const unlandedChild = preflight('unlanded-child-session', turn, {}, { WORKTREE_TEST_AHEAD_PATH: path.join(temp, 'wt-2') });
+  assert.equal(denial(unlandedChild), true, 'unlanded non-primary commits block a new checkout');
+  assert.match(output(unlandedChild).hookSpecificOutput.permissionDecisionReason, /2 commit\(s\) not verified on refs\/remotes\/origin\/dev/);
+
+  authorize('merge-only-child-session');
+  const mergeOnlyChild = preflight('merge-only-child-session', turn, {}, {
+    WORKTREE_TEST_AHEAD_PATH: path.join(temp, 'wt-3'), WORKTREE_TEST_MERGE_PATH: path.join(temp, 'wt-3'),
+  });
+  assert.equal(denial(mergeOnlyChild), true, 'merge-only unlanded worktree is not admitted by empty git-cherry output');
+
+  const unrelatedShell = call('codex', {
+    session_id: 'unrelated-shell-session', turn_id: turn, tool_use_id: 'unrelated-shell-tool',
+    cwd: temp, tool_name: 'Bash', tool_input: { command: 'printf unrelated-command' },
+  });
+  assert.equal(unrelatedShell.status, 0);
+  assert.equal(denial(unrelatedShell), false, 'unrelated shell command is not intercepted by worktree guard');
+
+  authorize('ambiguous-trunk-session');
+  assert.equal(denial(preflight('ambiguous-trunk-session', turn, {}, { WORKTREE_TEST_MODE: 'ambiguous-policy' })), true,
+    'ambiguous integration-trunk policy fails closed');
+
+  authorize('remote-unavailable-session');
+  assert.equal(denial(preflight('remote-unavailable-session', turn, {}, { WORKTREE_TEST_MODE: 'remote-unavailable' })), true,
+    'unavailable origin readback fails closed');
+
+  authorize('stale-origin-session');
+  assert.equal(denial(preflight('stale-origin-session', turn, {}, { WORKTREE_TEST_MODE: 'stale-origin' })), true,
+    'stale remote-tracking refs fail closed');
+
+  authorize('malformed-policy-session');
+  assert.equal(denial(preflight('malformed-policy-session', turn, {}, { WORKTREE_TEST_POLICY: 'malformed' })), true,
+    'malformed single-trunk policy fails closed');
+
+  authorize('single-trunk-session');
+  assert.equal(denial(preflight('single-trunk-session', turn, {}, { WORKTREE_TEST_POLICY: 'single-trunk' })), false,
+    'verified single-trunk policy uses production trunk');
+  post('single-trunk-session');
+
+  const actual = path.join(temp, 'squash-merge-fixture');
+  const bare = path.join(actual, 'origin.git');
+  const primary = path.join(actual, 'primary');
+  const feature = path.join(actual, 'feature');
+  fs.mkdirSync(actual, { recursive: true });
+  function realGit(args, cwd = actual) {
+    const result = spawnSync('git', args, { cwd, encoding: 'utf8', env: process.env });
+    assert.equal(result.status, 0, `git ${args.join(' ')} failed: ${result.stderr}`);
+    return result.stdout.trim();
+  }
+  realGit(['init', '--bare', '--initial-branch=main', bare]);
+  realGit(['init', '--initial-branch=main', primary]);
+  realGit(['config', 'user.name', 'Worktree Test'], primary);
+  realGit(['config', 'user.email', 'worktree-test@example.invalid'], primary);
+  fs.writeFileSync(path.join(primary, 'seed.txt'), 'seed\n');
+  realGit(['add', 'seed.txt'], primary);
+  realGit(['commit', '-m', 'seed'], primary);
+  realGit(['remote', 'add', 'origin', bare], primary);
+  realGit(['push', '-u', 'origin', 'main'], primary);
+  realGit(['checkout', '-b', 'dev'], primary);
+  realGit(['push', '-u', 'origin', 'dev'], primary);
+  realGit(['worktree', 'add', '-b', 'feature', feature, 'dev'], primary);
+  realGit(['config', 'user.name', 'Worktree Test'], feature);
+  realGit(['config', 'user.email', 'worktree-test@example.invalid'], feature);
+  fs.writeFileSync(path.join(feature, 'candidate.txt'), 'first line\n');
+  realGit(['add', 'candidate.txt'], feature);
+  realGit(['commit', '-m', 'candidate first change'], feature);
+  fs.writeFileSync(path.join(feature, 'candidate.txt'), 'first line\nsecond line\n');
+  realGit(['add', 'candidate.txt'], feature);
+  realGit(['commit', '-m', 'candidate second change'], feature);
+  fs.writeFileSync(path.join(primary, 'candidate.txt'), 'first line\nsecond line\n');
+  realGit(['add', 'candidate.txt'], primary);
+  realGit(['commit', '-m', 'squashed candidate'], primary);
+  realGit(['push', 'origin', 'dev'], primary);
+  fs.writeFileSync(path.join(primary, 'later.txt'), 'unrelated trunk change\n');
+  realGit(['add', 'later.txt'], primary);
+  realGit(['commit', '-m', 'later trunk change'], primary);
+  realGit(['push', 'origin', 'dev'], primary);
+  realGit(['fetch', 'origin'], primary);
+  const actualCommon = fs.realpathSync(path.join(primary, '.git'));
+  assert.equal(worktreeAdmission(actualCommon), null,
+    'clean two-commit feature worktree is admitted after its squash merge and later unrelated trunk commit');
+
+  const mergeFeature = path.join(actual, 'merge-feature');
+  realGit(['worktree', 'add', '-b', 'merge-feature', mergeFeature, 'origin/dev'], primary);
+  realGit(['config', 'user.name', 'Worktree Test'], mergeFeature);
+  realGit(['config', 'user.email', 'worktree-test@example.invalid'], mergeFeature);
+  fs.writeFileSync(path.join(mergeFeature, 'feature-side.txt'), 'feature side\n');
+  realGit(['add', 'feature-side.txt'], mergeFeature);
+  realGit(['commit', '-m', 'feature side'], mergeFeature);
+  const sideBranch = path.join(actual, 'side-branch');
+  realGit(['worktree', 'add', '-b', 'merge-side', sideBranch, 'origin/dev'], primary);
+  realGit(['config', 'user.name', 'Worktree Test'], sideBranch);
+  realGit(['config', 'user.email', 'worktree-test@example.invalid'], sideBranch);
+  fs.writeFileSync(path.join(sideBranch, 'other-side.txt'), 'other side\n');
+  realGit(['add', 'other-side.txt'], sideBranch);
+  realGit(['commit', '-m', 'other side'], sideBranch);
+  realGit(['merge', '--no-ff', '--no-edit', 'merge-side'], mergeFeature);
+  const actualAdmission = worktreeAdmission(actualCommon);
+  assert.match(actualAdmission || '', /merge-feature .*not verified/,
+    'clean squash-merged feature is accepted but merge-only unlanded checkout still blocks');
+  assert.equal((actualAdmission || '').includes(`${feature} (`), false,
+    'squash-merged checkout is absent from unresolved worktree blockers');
   assert.equal(denial(preflight('no-owner-session')), true, 'private worktree request without owner-intent token is denied');
 
   const agentSession = 'agent-isolation-session';
@@ -146,6 +303,34 @@ try {
   post(agentSession, { tool_name: 'Agent', tool_input: { isolation: 'worktree' } });
   const multi = preflight('multi-add-session', turn, { tool_input: { command: 'git worktree add ../a && git worktree add ../b' } });
   assert.equal(denial(multi), true, 'multiple direct adds in one call are rejected');
+
+  for (const [name, command] of [
+    ['equals', `git --git-dir=${path.join(temp, '.git')} worktree add ../new-wt`],
+    ['separate argument', `git --git-dir ${path.join(temp, '.git')} worktree add ../new-wt`],
+    ['combined target options', `git -C ${temp} --git-dir ${path.join(temp, '.git')} worktree add ../new-wt`],
+    ['absolute executable', '/usr/bin/git worktree add ../new-wt'],
+    ['command absolute executable', 'command /usr/bin/git worktree add ../new-wt'],
+  ]) {
+    const sess = `git-dir-${name.replaceAll(' ', '-')}`;
+    authorize(sess);
+    const result = preflight(sess, turn, { tool_input: { command } }, { WORKTREE_TEST_COUNT: '5' });
+    assert.equal(denial(result), true, `explicit --git-dir form is denied at the cap (${name})`);
+  }
+
+  authorize('unparsed-git-options-session');
+  const unparsedGitOptions = preflight('unparsed-git-options-session', turn,
+    { tool_input: { command: 'git --future-option worktree add ../new-wt' } }, { WORKTREE_TEST_COUNT: '5' });
+  assert.equal(denial(unparsedGitOptions), true, 'unparsed Git options fail closed for worktree creation');
+
+  authorize('git-dir-env-session');
+  const gitDirEnv = preflight('git-dir-env-session', turn,
+    { tool_input: { command: `GIT_DIR=${path.join(temp, '.git')} git worktree add ../new-wt` } });
+  assert.equal(denial(gitDirEnv), true, 'environment-selected Git directories fail closed');
+
+  authorize('git-common-dir-env-session');
+  const gitCommonDirEnv = preflight('git-common-dir-env-session', turn,
+    { tool_input: { command: `GIT_COMMON_DIR=${path.join(temp, 'other.git')} git worktree add ../new-wt` } });
+  assert.equal(denial(gitCommonDirEnv), true, 'environment-selected Git common directories fail closed');
 
   const claudeShellSession = 'claude-shell-session';
   call('claude-user-prompt', { session_id: claudeShellSession, cwd: temp, prompt: 'I authorize creating a worktree.' });
@@ -311,6 +496,29 @@ try {
   assert.notEqual(invalid.run().status, 0, 'both settings files validate before any write');
   assert.deepEqual(fs.readFileSync(path.join(invalid.claudeDir, 'settings.json')), originalClaude);
   assert.equal(fs.existsSync(invalid.claudeLink), false);
+
+  for (const key of ['claude', 'codex']) {
+    const symlinked = installerFixture();
+    const config = key === 'claude'
+      ? path.join(symlinked.claudeDir, 'settings.json')
+      : path.join(symlinked.codexDir, 'hooks.json');
+    const otherConfig = key === 'claude'
+      ? path.join(symlinked.codexDir, 'hooks.json')
+      : path.join(symlinked.claudeDir, 'settings.json');
+    const target = `${config}.target`;
+    const targetBytes = fs.readFileSync(config);
+    const otherBytes = fs.readFileSync(otherConfig);
+    fs.renameSync(config, target);
+    fs.symlinkSync(target, config);
+    const refused = symlinked.run();
+    assert.notEqual(refused.status, 0, `${key} symlinked settings config is refused`);
+    assert.match(refused.stderr, /symlinks are unsupported/);
+    assert(fs.lstatSync(config).isSymbolicLink(), `${key} settings symlink remains intact`);
+    assert.deepEqual(fs.readFileSync(target), targetBytes, `${key} symlink target remains unchanged`);
+    assert.deepEqual(fs.readFileSync(otherConfig), otherBytes, `other settings file remains unchanged for ${key}`);
+    assert.equal(fs.existsSync(symlinked.claudeLink), false, `no Claude hook link is installed when ${key} config is refused`);
+    assert.equal(fs.existsSync(symlinked.codexLink), false, `no Codex hook link is installed when ${key} config is refused`);
+  }
 
   const installerLocked = installerFixture();
   const lockedClaude = fs.readFileSync(path.join(installerLocked.claudeDir, 'settings.json'));
