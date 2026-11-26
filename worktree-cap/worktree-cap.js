@@ -10,6 +10,10 @@ const { spawnSync } = require('node:child_process');
 const CAP = 5;
 const TOKEN_TTL_MS = 2 * 60 * 1000;
 const STATE_DIR = path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'worktree-cap');
+const NATIVE_CREATE_TOOL = 'mcp__codex_app__create_worktree';
+const NATIVE_STATUS_TOOL = 'mcp__codex_app__get_worktree_creation_status';
+const NATIVE_OPERATIONS_DIR = path.join(STATE_DIR, 'native-operations');
+const AUDIT_FILE = path.join(STATE_DIR, 'native-audit.jsonl');
 
 function fail(message, code = 2) {
   const error = new Error(message);
@@ -223,6 +227,13 @@ function atomicJson(file, data) {
   fs.renameSync(tmp, file);
 }
 
+function exclusiveJson(file, data) {
+  const tmp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data), { mode: 0o600, flag: 'wx' });
+  try { fs.linkSync(tmp, file); }
+  finally { try { fs.unlinkSync(tmp); } catch {} }
+}
+
 function issueToken(input, platform) {
   if (!ownerIntent(input.prompt)) return;
   const common = commonDir(input.cwd);
@@ -268,6 +279,257 @@ function acquireLock(common, input) {
     }
   }
   return null;
+}
+
+function readLockOwner(common) {
+  try {
+    const value = JSON.parse(fs.readFileSync(lockOwnerFile(lockPath(common)), 'utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch { return null; }
+}
+
+function updateLockOwner(common, expected, update) {
+  const current = readLockOwner(common);
+  if (!current || current.session !== expected.session || current.tool_use_id !== expected.tool_use_id) return false;
+  atomicJson(lockOwnerFile(lockPath(common)), { ...current, ...update });
+  return true;
+}
+
+function operationRecordPath(operationHash) {
+  return path.join(NATIVE_OPERATIONS_DIR, `operation-${operationHash}.json`);
+}
+
+function appendNativeAudit(record) {
+  ensureStateDir();
+  fs.appendFileSync(AUDIT_FILE, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+  fs.chmodSync(AUDIT_FILE, 0o600);
+}
+
+function toolInput(input) {
+  return input.tool_input && typeof input.tool_input === 'object' && !Array.isArray(input.tool_input)
+    ? input.tool_input
+    : input.input && typeof input.input === 'object' && !Array.isArray(input.input) ? input.input : {};
+}
+
+function toolName(input) { return input.tool_name || input.toolName || ''; }
+
+function nativeCommonDir(input) {
+  const args = toolInput(input);
+  let root = args.sourceRoot;
+  if (root === undefined || root === null || root === '') root = input.cwd;
+  if (typeof root !== 'string' || !path.isAbsolute(root)) return null;
+  let canonical;
+  try {
+    canonical = fs.realpathSync(root);
+    if (!fs.statSync(canonical).isDirectory()) return null;
+  } catch { return null; }
+  return repositoryRoot(canonical) ? commonDir(canonical) : null;
+}
+
+function responseObject(input) {
+  let value = input.tool_response ?? input.tool_result ?? null;
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value); } catch { return null; }
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (item && typeof item.text === 'string') {
+        try { return JSON.parse(item.text); } catch { /* Continue to other content blocks. */ }
+      }
+    }
+    return null;
+  }
+  if (!value || typeof value !== 'object') return null;
+  if (Array.isArray(value.content)) {
+    for (const item of value.content) {
+      if (item && typeof item.text === 'string') {
+        try { return JSON.parse(item.text); } catch { /* Continue to structured content. */ }
+      }
+    }
+  }
+  return value;
+}
+
+function findOperationId(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  for (const key of ['operationId', 'operation_id']) {
+    if (typeof value[key] === 'string' && value[key].trim()) return value[key];
+  }
+  for (const key of ['structuredContent', 'result', 'data']) {
+    const nested = findOperationId(value[key]);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function findTerminalStatus(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (value.status === 'completed' || value.status === 'failed') return value.status;
+  for (const key of ['structuredContent', 'result', 'data']) {
+    const nested = findTerminalStatus(value[key]);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function findWorktreePaths(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const paths = [];
+  for (const key of ['path', 'worktreePath', 'workspaceDirectory']) {
+    if (typeof value[key] === 'string' && path.isAbsolute(value[key])) paths.push(path.normalize(value[key]));
+  }
+  for (const key of ['paths', 'worktrees']) {
+    if (Array.isArray(value[key])) {
+      for (const item of value[key]) {
+        if (typeof item === 'string' && path.isAbsolute(item)) paths.push(path.normalize(item));
+        else if (item && typeof item === 'object') paths.push(...findWorktreePaths(item));
+      }
+    }
+  }
+  for (const key of ['structuredContent', 'result', 'data']) paths.push(...findWorktreePaths(value[key]));
+  return [...new Set(paths)];
+}
+
+function nativeCreatePreflight(input) {
+  if (input.agent_id) deny('codex', 'Delegated agents cannot authorize worktree creation.');
+  const common = nativeCommonDir(input);
+  if (typeof input.tool_use_id !== 'string' || !input.tool_use_id || !common || !stateIdentity(input, common, 'codex')) {
+    deny('codex', 'Native worktree request is missing a bound tool, session, turn, or repository identity.');
+  }
+  if (!acquireLock(common, input)) deny('codex', 'Another worktree request is active for this repository, or its reservation needs recovery.');
+  let keepLock = false;
+  try {
+    const entries = worktreeEntries(common);
+    const count = entries ? entries.length : null;
+    const admission = worktreeAdmission(common);
+    if (admission) deny('codex', admission);
+    if (count === null || count >= CAP) deny('codex', 'Cannot verify capacity below the five-worktree cap.');
+    if (!consumeToken(input, common, 'codex')) deny('codex', 'No unexpired owner-intent request is available for this repository and turn.');
+    const owner = readLockOwner(common);
+    if (!owner || !updateLockOwner(common, owner, {
+      native_create: true,
+      native_tool_use_hash: sha(input.tool_use_id),
+      common_hash: sha(common),
+      worktree_count_before: count,
+      worktree_paths_before: entries.map(entry => path.normalize(entry.path)),
+      operation_hash: null,
+    })) deny('codex', 'Could not persist the native worktree reservation.');
+    keepLock = true;
+  } finally {
+    if (!keepLock) releaseLock(common, input);
+  }
+}
+
+function nativeCreatePost(input) {
+  const common = nativeCommonDir(input);
+  if (!common) return;
+  const owner = readLockOwner(common);
+  if (!owner || !owner.native_create || owner.tool_use_id !== (input.tool_use_id || null) || owner.session !== sha(String(input.session_id || ''))) return;
+  const result = responseObject(input);
+  if (!result) return;
+  const operationId = findOperationId(result);
+  const status = findTerminalStatus(result);
+  const operationHash = operationId ? sha(operationId) : null;
+  if (operationHash && status !== 'completed' && status !== 'failed') {
+    try {
+      fs.mkdirSync(NATIVE_OPERATIONS_DIR, { recursive: true, mode: 0o700 });
+      fs.chmodSync(NATIVE_OPERATIONS_DIR, 0o700);
+      exclusiveJson(operationRecordPath(operationHash), {
+        common_dir: common,
+        common_hash: sha(common),
+        operation_hash: operationHash,
+        tool_use_hash: owner.native_tool_use_hash,
+        session_hash: owner.session,
+        worktree_count_before: owner.worktree_count_before,
+      });
+      if (!updateLockOwner(common, owner, { operation_hash: operationHash })) {
+        fs.unlinkSync(operationRecordPath(operationHash));
+        return;
+      }
+    } catch { /* Keep the repository lock if operation mapping cannot be persisted. */ }
+    return;
+  }
+  if (operationHash && !updateLockOwner(common, owner, { operation_hash: operationHash })) return;
+  const paths = findWorktreePaths(result);
+  const visible = nativeWorktreeVisible(common, owner, paths);
+  if (status === 'failed' || (status === 'completed' && visible) || (!operationHash && visible)) {
+    finishNativeReservation(common, owner, operationHash, status || 'completed', 'post_tool_terminal_readback');
+  }
+}
+
+function nativeWorktreeVisible(common, owner, returnedPaths = []) {
+  const entries = worktreeEntries(common);
+  if (!entries) return false;
+  const current = entries.map(entry => path.normalize(entry.path));
+  const before = Array.isArray(owner.worktree_paths_before) ? owner.worktree_paths_before.map(path.normalize) : [];
+  if (returnedPaths.some(candidate => current.includes(path.normalize(candidate)) && !before.includes(path.normalize(candidate)))) return true;
+  const added = current.filter(candidate => !before.includes(candidate));
+  return added.length === 1;
+}
+
+function finishNativeReservation(common, owner, operationHash, status, reason) {
+  const current = readLockOwner(common);
+  if (!current || !current.native_create || current.native_tool_use_hash !== owner.native_tool_use_hash || current.tool_use_id !== owner.tool_use_id) return false;
+  if (operationHash && current.operation_hash !== operationHash) return false;
+  appendNativeAudit({ at: new Date().toISOString(), common_hash: sha(common), operation_hash: operationHash || null, tool_use_hash: current.native_tool_use_hash, status, reason });
+  fs.rmSync(lockPath(common), { recursive: true });
+  if (operationHash) { try { fs.unlinkSync(operationRecordPath(operationHash)); } catch {} }
+  return true;
+}
+
+function nativeStatusPost(input) {
+  const args = toolInput(input);
+  const response = responseObject(input);
+  const requestedId = args.operationId || args.operation_id;
+  const returnedId = response && findOperationId(response);
+  const status = response && findTerminalStatus(response);
+  if (typeof requestedId !== 'string' || !requestedId || requestedId !== returnedId || !status) return;
+  const operationHash = sha(requestedId);
+  let record;
+  try { record = JSON.parse(fs.readFileSync(operationRecordPath(operationHash), 'utf8')); } catch { return; }
+  if (!record || record.operation_hash !== operationHash || record.common_hash !== sha(record.common_dir) || record.session_hash !== sha(String(input.session_id || ''))) return;
+  let common;
+  try { common = fs.realpathSync(record.common_dir); } catch { return; }
+  if (common !== record.common_dir || commonDir(path.dirname(common)) !== common) return;
+  const owner = readLockOwner(common);
+  if (!owner || owner.operation_hash !== operationHash || owner.native_tool_use_hash !== record.tool_use_hash) return;
+  if (status === 'completed') {
+    const paths = findWorktreePaths(response);
+    if (!nativeWorktreeVisible(common, owner, paths)) return;
+  }
+  finishNativeReservation(common, owner, operationHash, status, 'matching_status_readback');
+}
+
+function recoverNativeReservation(input) {
+  const operationId = input.operationId;
+  const saved = responseObject({ tool_response: input.savedStatusResponse });
+  if (typeof operationId !== 'string' || !operationId || input.reason !== 'operator_verified_terminal_status') fail('recovery requires the exact operationId and reason operator_verified_terminal_status');
+  const statusId = saved && findOperationId(saved);
+  const status = saved && findTerminalStatus(saved);
+  if (statusId !== operationId || !status) fail('saved status response must match the operationId and report completed or failed');
+  if (typeof input.sourceRoot !== 'string' || !path.isAbsolute(input.sourceRoot) || typeof input.createToolUseId !== 'string' || !input.createToolUseId) {
+    fail('recovery requires the exact sourceRoot and createToolUseId from the native create callback');
+  }
+  const common = nativeCommonDir({ cwd: input.sourceRoot, tool_input: { sourceRoot: input.sourceRoot } });
+  if (!common) fail('recovery sourceRoot does not resolve to a Git repository');
+  const operationHash = sha(operationId);
+  let record = null;
+  try { record = JSON.parse(fs.readFileSync(operationRecordPath(operationHash), 'utf8')); }
+  catch (error) { if (error.code !== 'ENOENT') fail('native operation reservation is malformed'); }
+  if (record) {
+    if (record.operation_hash !== operationHash || record.common_hash !== sha(record.common_dir)) fail('native operation reservation is malformed');
+    let recordedCommon;
+    try { recordedCommon = fs.realpathSync(record.common_dir); } catch { fail('reserved repository is unavailable'); }
+    if (recordedCommon !== record.common_dir || common !== recordedCommon || commonDir(path.dirname(common)) !== common) fail('reserved repository identity no longer matches');
+  }
+  const owner = readLockOwner(common);
+  if (!owner || !owner.native_create || owner.common_hash !== sha(common)) fail('matching native reservation is unavailable');
+  if (owner.native_tool_use_hash !== sha(input.createToolUseId) || owner.tool_use_id !== input.createToolUseId) fail('create tool invocation ID does not match the native reservation');
+  if (record && (record.tool_use_hash !== owner.native_tool_use_hash || record.session_hash !== owner.session)) fail('operation record does not match the native create invocation');
+  if (owner.operation_hash && owner.operation_hash !== operationHash) fail('native reservation is bound to a different operation');
+  if (!owner.operation_hash && !updateLockOwner(common, owner, { operation_hash: operationHash })) fail('could not bind terminal evidence to the native reservation');
+  if (status === 'completed' && !nativeWorktreeVisible(common, owner, findWorktreePaths(saved))) fail('completed worktree is not visible in git worktree list');
+  if (!finishNativeReservation(common, owner, operationHash, status, 'operator_verified_terminal_status')) fail('native reservation could not be released safely');
 }
 
 function releaseLock(common, input) {
@@ -456,13 +718,17 @@ function main() {
   if (event === 'codex-user-prompt') { issueToken(input, 'codex'); return; }
   if (event === 'claude-user-prompt') { issueToken(input, 'claude'); return; }
   if (event === 'claude-worktree-create') { createClaudeWorktree(input); return; }
+  if (event === 'recover-native') { recoverNativeReservation(input); return; }
   if (event === 'post-tool' || event === 'claude-post-tool') {
+    if (toolName(input) === NATIVE_CREATE_TOOL) { nativeCreatePost(input); return; }
+    if (toolName(input) === NATIVE_STATUS_TOOL) { nativeStatusPost(input); return; }
     const target = targetRepository(input);
     const common = target.unsupported ? null : commonDir(target.cwd, target.gitDir);
     if (common) releaseLock(common, input);
     return;
   }
   if (event === 'codex' || event === 'claude-pretool') {
+    if (event === 'codex' && toolName(input) === NATIVE_CREATE_TOOL) { nativeCreatePreflight(input); return; }
     const matched = event === 'codex' ? isWorktreeRequest(input) : isDirectGitWorktreeAdd(input);
     if (matched) preflight(input, event, event === 'codex' ? 'codex' : 'claude');
     return;

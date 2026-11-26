@@ -34,15 +34,34 @@ Claude's default Git worktree creation.
 
 For recognized hook paths, a repo-common-dir lock serializes the count and
 authorization check. Claude native creation holds it through `git worktree add`;
-Codex agent isolation and direct shell calls hold it until `PostToolUse`. The
-lock directory is mode `0700`; its `owner.json` file is mode `0600`. Locks
-remain held until native creation finishes or a matching `PostToolUse` arrives.
-The hook never reclaims a lock based only on age, because a long-running guarded
-command could still be active. If a host crashes before the completion event,
-inspect `owner.json` and confirm no guarded command is active before removing
-the stale lock directory. This narrows races
-among hook-controlled calls; it cannot coordinate with Git clients or processes
-that bypass these hooks.
+Codex agent isolation and direct shell calls hold it until `PostToolUse`. Codex
+app `create_worktree` holds a repository reservation through its asynchronous
+operation: the create callback binds the returned `operationId`, and only a
+matching terminal `get_worktree_creation_status` callback can release it. A
+successful terminal result must also be visible in `git worktree list`. The
+lock directory is mode `0700`; its `owner.json` file is mode `0600`; native
+operation records and audit records are mode `0600` under the private state
+directory. Missing, malformed, mismatched, unknown, or nonterminal evidence
+leaves the reservation held; the hook never reclaims a lock by age.
+
+If a native operation's callback is lost, first save its exact terminal status
+response from `get_worktree_creation_status`. For a completed operation, verify
+the resulting checkout appears in the repository's `git worktree list`. Then
+run the guarded recovery command with the exact operation ID and status object:
+
+```sh
+node ~/.codex/hooks/worktree-cap.js recover-native <<'JSON'
+{"operationId":"<exact-operation-id>","sourceRoot":"<absolute-source-repository>","createToolUseId":"<exact-create-tool-use-id>","savedStatusResponse":{"operationId":"<exact-operation-id>","status":"completed"},"reason":"operator_verified_terminal_status"}
+JSON
+```
+
+Use `"status":"failed"` only when the saved response says the operation
+failed. The `sourceRoot` and `createToolUseId` come from the matching create
+callback; recovery requires all four identities even if the operation index was
+lost during a crash. It verifies the reservation and repository identity,
+writes a hashed audit entry, and removes only the matching reservation. Do not
+remove a lock by age or by hand. This narrows races among hook-controlled calls;
+it cannot coordinate with Git clients or processes that bypass these hooks.
 
 Prompt text that matches a clear owner-intent pattern can mint one short-lived
 token. The host payloads do not provide a trustworthy human-origin signal, so
@@ -62,6 +81,9 @@ not an identity or complete process-level authorization boundary.
   `UserPromptSubmit` supplies a short-lived token bound to the canonical Git
   common directory and Codex session/turn where available. `PostToolUse`
   releases the repo lock after an agent or shell tool finishes.
+- Codex app `mcp__codex_app__create_worktree` is matched by `PreToolUse` and
+  `PostToolUse`; `mcp__codex_app__get_worktree_creation_status` is matched by
+  `PostToolUse` to retain or release the exact asynchronous reservation.
 - Arbitrary subprocesses, external Git clients, direct Git library calls,
   specialized tool routes that opt out of hooks, and application-level worktree
   operations without hook callbacks are outside this guarantee.

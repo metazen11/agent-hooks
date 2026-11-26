@@ -93,6 +93,30 @@ function preflight(sess = session, t = turn, fields = {}, extra = {}) {
 function post(sess = session, fields = {}) {
   return call('post-tool', { session_id: sess, tool_use_id: `tool-${sess}`, cwd: temp, tool_name: 'Bash', tool_input: { command: 'git worktree add ../new-wt' }, ...fields });
 }
+function nativeCreate(sess, toolId = `native-${sess}`, args = {}, extra = {}) {
+  return call('codex', {
+    session_id: sess, turn_id: turn, tool_use_id: toolId, cwd: temp,
+    tool_name: 'mcp__codex_app__create_worktree',
+    tool_input: { sourceRoot: temp, ref: 'origin/dev', ...args },
+  }, extra);
+}
+function nativePostCreate(sess, toolId, toolResponse, extra = {}) {
+  return call('post-tool', {
+    session_id: sess, turn_id: turn, tool_use_id: toolId, cwd: temp,
+    tool_name: 'mcp__codex_app__create_worktree',
+    tool_input: { sourceRoot: temp }, tool_response: toolResponse,
+  }, extra);
+}
+function nativePostStatus(sess, toolId, operationId, statusResponse, extra = {}) {
+  return call('post-tool', {
+    session_id: sess, turn_id: turn, tool_use_id: toolId, cwd: temp,
+    tool_name: 'mcp__codex_app__get_worktree_creation_status',
+    tool_input: { operationId }, tool_response: statusResponse,
+  }, extra);
+}
+function recoverNative(operationId, savedStatusResponse, reason = 'operator_verified_terminal_status', fields = {}, extra = {}) {
+  return call('recover-native', { operationId, savedStatusResponse, reason, ...fields }, extra);
+}
 function claudePre(sess, input = {}) {
   return call('claude-pretool', { session_id: sess, tool_use_id: `tool-${sess}`, cwd: temp, tool_name: 'Bash', tool_input: { command: 'git worktree add ../new-wt' }, ...input });
 }
@@ -156,6 +180,18 @@ function installerFixture() {
 
 async function runTests() {
 try {
+  for (const instructionFile of ['AGENTS.md', 'CLAUDE.md']) {
+    const agentInstructions = fs.readFileSync(path.join(__dirname, '..', instructionFile), 'utf8');
+    assert.match(agentInstructions, /reuse the task's assigned\s+existing checkout by default/i,
+      `${instructionFile} defaults to assigned-checkout reuse`);
+    assert.match(agentInstructions, /separate worktree is\s+an exception/i,
+      `${instructionFile} makes separate worktrees exceptional`);
+    assert.match(agentInstructions, /installed `worktree-cap` guard[^.]*five-total limit/i,
+      `${instructionFile} binds worktree exceptions to the five-tree guard`);
+    assert.doesNotMatch(agentInstructions, /use\s+one\s+isolated\s+worktree\s+per\s+overlapping\s+task/i,
+      `${instructionFile} must not restore worktree creation as the default`);
+  }
+
   const repoA = path.join(temp, 'repo-a');
   const repoB = path.join(temp, 'repo-b');
   assert.equal(targetRepository({ cwd: temp, tool_input: { command: `git -C ${repoA} -C ../repo-b worktree add ../new-wt` } }).cwd,
@@ -429,6 +465,77 @@ try {
   assert.equal(denial(preflight(sixthSession, turn, {}, { WORKTREE_TEST_COUNT_FILE: sharedCount })), true, 'count 5 prevents an additional creation');
   assert.equal(fs.readFileSync(sharedCount, 'utf8'), '5', 'concurrent path cannot exceed five');
 
+  const nativeSession = 'native-async-session';
+  authorize(nativeSession);
+  const nativeToolId = 'native-create-tool-id';
+  const nativeAdmission = nativeCreate(nativeSession, nativeToolId);
+  assert.equal(denial(nativeAdmission), false, 'native create uses the five-tree admission path');
+  const nativeLock = path.join(temp, '.git', 'worktree-cap.lock');
+  const nativeOperationId = 'native-operation-123';
+  nativePostCreate(nativeSession, nativeToolId, { content: [{ type: 'text', text: JSON.stringify({ operationId: nativeOperationId, status: 'pending' }) }] });
+  assert.equal(fs.existsSync(nativeLock), true, 'pending native create retains the repository reservation');
+  const nativeOperationHash = crypto.createHash('sha256').update(nativeOperationId).digest('hex');
+  const nativeOperationPath = path.join(state, 'worktree-cap', 'native-operations', `operation-${nativeOperationHash}.json`);
+  assert.equal(fs.existsSync(nativeOperationPath), true, 'pending operation is bound to its exact operation ID');
+  const conflictingNative = nativeCreate('native-conflict-session');
+  assert.equal(denial(conflictingNative), true, 'another create cannot enter while the async reservation is pending');
+  nativePostStatus(nativeSession, 'native-status-mismatch', nativeOperationId, { operationId: 'different-operation', status: 'completed' }, { WORKTREE_TEST_COUNT: '5' });
+  assert.equal(fs.existsSync(nativeLock), true, 'mismatched status cannot release the reservation');
+  nativePostStatus(nativeSession, 'native-status-pending', nativeOperationId, { operationId: nativeOperationId, status: 'creating' }, { WORKTREE_TEST_COUNT: '5' });
+  assert.equal(fs.existsSync(nativeLock), true, 'nonterminal status cannot release the reservation');
+  nativePostStatus(nativeSession, 'native-status-not-visible', nativeOperationId, { operationId: nativeOperationId, status: 'completed' }, { WORKTREE_TEST_COUNT: '4' });
+  assert.equal(fs.existsSync(nativeLock), true, 'completed status without inventory evidence cannot release the reservation');
+  nativePostStatus(nativeSession, 'native-status-complete', nativeOperationId, { content: [{ type: 'text', text: JSON.stringify({ operationId: nativeOperationId, status: 'completed' }) }] }, { WORKTREE_TEST_COUNT: '5' });
+  assert.equal(fs.existsSync(nativeLock), false, 'matching terminal status plus Git inventory readback releases the reservation');
+  assert.equal(fs.existsSync(nativeOperationPath), false, 'completed operation record is removed after audited release');
+  const nativeAuditPath = path.join(state, 'worktree-cap', 'native-audit.jsonl');
+  assert.match(fs.readFileSync(nativeAuditPath, 'utf8'), /matching_status_readback/);
+
+  const recoverySession = 'native-recovery-session';
+  authorize(recoverySession);
+  const recoveryToolId = 'native-recovery-create-id';
+  assert.equal(denial(nativeCreate(recoverySession, recoveryToolId)), false);
+  const recoveryOperationId = 'native-operation-recovery';
+  nativePostCreate(recoverySession, recoveryToolId, { operationId: recoveryOperationId, status: 'pending' });
+  const recoveryOperationHash = crypto.createHash('sha256').update(recoveryOperationId).digest('hex');
+  const recoveryOperationPath = path.join(state, 'worktree-cap', 'native-operations', `operation-${recoveryOperationHash}.json`);
+  fs.unlinkSync(recoveryOperationPath);
+  const recoveryOwnerPath = path.join(nativeLock, 'owner.json');
+  const recoveryOwner = JSON.parse(fs.readFileSync(recoveryOwnerPath, 'utf8'));
+  recoveryOwner.operation_hash = null;
+  fs.writeFileSync(recoveryOwnerPath, JSON.stringify(recoveryOwner), { mode: 0o600 });
+  const mismatchedRecovery = recoverNative('different-operation-id', { operationId: recoveryOperationId, status: 'completed' }, 'operator_verified_terminal_status', { sourceRoot: temp, createToolUseId: recoveryToolId });
+  assert.notEqual(mismatchedRecovery.status, 0, 'manual recovery rejects a mismatched operation ID');
+  assert.equal(fs.existsSync(nativeLock), true, 'mismatched operation evidence leaves the reservation held');
+  const invalidRecovery = recoverNative(recoveryOperationId, { operationId: recoveryOperationId, status: 'creating' });
+  assert.notEqual(invalidRecovery.status, 0, 'manual recovery rejects nonterminal evidence');
+  assert.equal(fs.existsSync(nativeLock), true, 'invalid recovery leaves the reservation held');
+  const completedRecovery = recoverNative(recoveryOperationId, { operationId: recoveryOperationId, status: 'completed' }, 'operator_verified_terminal_status', { sourceRoot: temp, createToolUseId: recoveryToolId }, { WORKTREE_TEST_COUNT: '5' });
+  assert.equal(completedRecovery.status, 0, completedRecovery.stderr);
+  assert.equal(fs.existsSync(nativeLock), false, 'manual recovery requires terminal evidence and successful worktree readback');
+  assert.match(fs.readFileSync(nativeAuditPath, 'utf8'), /operator_verified_terminal_status/);
+
+  const failedNativeSession = 'native-failed-session';
+  authorize(failedNativeSession);
+  const failedToolId = 'native-failed-create-tool-id';
+  assert.equal(denial(nativeCreate(failedNativeSession, failedToolId)), false);
+  const failedOperationId = 'native-operation-failed';
+  nativePostCreate(failedNativeSession, failedToolId, { operationId: failedOperationId, status: 'pending' });
+  nativePostStatus(failedNativeSession, 'native-failed-status-tool', failedOperationId, { operationId: failedOperationId, status: 'failed' });
+  assert.equal(fs.existsSync(nativeLock), false, 'matching failed status releases the reservation');
+
+  const nativeInvalidSession = 'native-invalid-source-session';
+  authorize(nativeInvalidSession);
+  assert.equal(denial(nativeCreate(nativeInvalidSession, 'native-invalid-source-id', { sourceRoot: 'relative/path' })), true, 'relative native sourceRoot fails closed');
+  assert.equal(fs.existsSync(nativeLock), false, 'invalid native source leaves no reservation');
+
+  const nativeImmediateSession = 'native-immediate-session';
+  authorize(nativeImmediateSession);
+  const immediateToolId = 'native-immediate-tool-id';
+  assert.equal(denial(nativeCreate(nativeImmediateSession, immediateToolId)), false);
+  nativePostCreate(nativeImmediateSession, immediateToolId, { paths: [path.join(temp, 'wt-4')] }, { WORKTREE_TEST_COUNT: '5' });
+  assert.equal(fs.existsSync(nativeLock), false, 'synchronous native completion releases only after worktree inventory increases');
+
   const staleSession = 'stale-lock-session';
   const staleLock = path.join(temp, '.git', 'worktree-cap.lock');
   fs.mkdirSync(staleLock);
@@ -461,6 +568,9 @@ try {
   const createdCodexConfig = path.join(freshCodex.codexDir, 'hooks.json');
   const createdCodex = JSON.parse(fs.readFileSync(createdCodexConfig, 'utf8'));
   assert(createdCodex.hooks.PreToolUse.some(group => group.matcher === 'spawn_agent|Agent|Task|Bash'));
+  assert(createdCodex.hooks.PreToolUse.some(group => group.matcher === 'mcp__codex_app__create_worktree'));
+  assert(createdCodex.hooks.PostToolUse.some(group => group.matcher === 'mcp__codex_app__create_worktree'));
+  assert(createdCodex.hooks.PostToolUse.some(group => group.matcher === 'mcp__codex_app__get_worktree_creation_status'));
   assert.equal(fs.statSync(createdCodexConfig).mode & 0o777, 0o600, 'new Codex hooks config uses private permissions');
   assert.equal(fs.realpathSync(freshCodex.codexLink), fs.realpathSync(hook));
 
@@ -489,6 +599,9 @@ try {
     JSON.parse(fs.readFileSync(path.join(fixture.codexDir, 'hooks.json'), 'utf8')),
   ];
   assert(afterFirst[1].hooks.PreToolUse.some(group => group.matcher === 'spawn_agent|Agent|Task|Bash'));
+  assert(afterFirst[1].hooks.PreToolUse.some(group => group.matcher === 'mcp__codex_app__create_worktree'));
+  assert(afterFirst[1].hooks.PostToolUse.some(group => group.matcher === 'mcp__codex_app__create_worktree'));
+  assert(afterFirst[1].hooks.PostToolUse.some(group => group.matcher === 'mcp__codex_app__get_worktree_creation_status'));
   const codexShared = afterFirst[1].hooks.PreToolUse.find(group => group.matcher === 'Bash');
   assert.equal(codexShared.hooks.length, 1);
   assert.equal(codexShared.hooks[0].command, 'node codex-unrelated.js');
