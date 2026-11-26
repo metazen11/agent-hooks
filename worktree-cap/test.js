@@ -156,15 +156,17 @@ function installerFixture() {
 
 async function runTests() {
 try {
-  const agentInstructions = fs.readFileSync(path.join(__dirname, '..', 'AGENTS.md'), 'utf8');
-  assert.match(agentInstructions, /reuse the task's assigned\s+existing checkout by default/i,
-    'root agent instructions default to assigned-checkout reuse');
-  assert.match(agentInstructions, /separate worktree is\s+an exception/i,
-    'root agent instructions make separate worktrees exceptional');
-  assert.match(agentInstructions, /installed `worktree-cap` guard[^.]*five-total limit/i,
-    'root agent instructions bind worktree exceptions to the five-tree guard');
-  assert.doesNotMatch(agentInstructions, /use\s+one\s+isolated\s+worktree\s+per\s+overlapping\s+task/i,
-    'root agent instructions must not restore worktree creation as the default');
+  for (const instructionFile of ['AGENTS.md', 'CLAUDE.md']) {
+    const agentInstructions = fs.readFileSync(path.join(__dirname, '..', instructionFile), 'utf8');
+    assert.match(agentInstructions, /reuse the task's assigned\s+existing checkout by default/i,
+      `${instructionFile} defaults to assigned-checkout reuse`);
+    assert.match(agentInstructions, /separate worktree is\s+an exception/i,
+      `${instructionFile} makes separate worktrees exceptional`);
+    assert.match(agentInstructions, /installed `worktree-cap` guard[^.]*five-total limit/i,
+      `${instructionFile} binds worktree exceptions to the five-tree guard`);
+    assert.doesNotMatch(agentInstructions, /use\s+one\s+isolated\s+worktree\s+per\s+overlapping\s+task/i,
+      `${instructionFile} must not restore worktree creation as the default`);
+  }
 
   const repoA = path.join(temp, 'repo-a');
   const repoB = path.join(temp, 'repo-b');

@@ -8,5 +8,9 @@
 
 Use the shared [Agent coordination issue #31](https://github.com/metazen11/agent-hooks/issues/31)
 for ownership proposals, handoffs, blockers, and exact-head evidence. Check it before
-claiming overlapping work, use an isolated worktree, and require explicit owner and
-receiver acknowledgment. This pointer does not override the engineering contract.
+claiming overlapping work. Reuse the task's assigned existing checkout by default;
+parallel agents may share it with explicit, non-overlapping file ownership and
+coordinated handoffs. A separate worktree is an exception: it requires explicit
+owner authorization and admission by the installed `worktree-cap` guard, which
+enforces the five-total limit and checks for dirty or unlanded non-primary
+checkouts. This pointer does not override the engineering contract.
