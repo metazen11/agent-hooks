@@ -90,6 +90,13 @@ function requiredEntries(target) {
       if (target.key === 'codex' && event === 'PreToolUse') matcher = 'spawn_agent|Agent|Task|Bash';
       if (target.key === 'codex' && event === 'PostToolUse') matcher = 'spawn_agent|Agent|Task|Bash';
       result.push({ event, matcher, hook });
+      if (target.key === 'codex' && event === 'PreToolUse') {
+        result.push({ event, matcher: 'mcp__codex_app__create_worktree', hook: { ...hook } });
+      }
+      if (target.key === 'codex' && event === 'PostToolUse') {
+        result.push({ event, matcher: 'mcp__codex_app__create_worktree', hook: { ...hook } });
+        result.push({ event, matcher: 'mcp__codex_app__get_worktree_creation_status', hook: { ...hook } });
+      }
     }
   }
   return result;

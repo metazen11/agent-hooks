@@ -1,0 +1,235 @@
+{
+  "verdict": "approved",
+  "source_reference": {
+    "system": "github",
+    "id": "GH-62",
+    "url": "https://github.com/metazen11/agent-hooks/issues/62"
+  },
+  "summary": "Extend the existing five-worktree guard to Codex native asynchronous worktree creation so its reservation survives until matching terminal evidence is verified.",
+  "gaps_found": [
+    {
+      "gap": "Codex native create_worktree and get_worktree_creation_status currently bypass the installed PreToolUse matcher and parser.",
+      "severity": "major",
+      "recommendation": "Add exact native tool matchers and bind repository admission to tool invocation and async operation identity."
+    }
+  ],
+  "refined_plan": {
+    "objective": "Enforce the existing five-total-worktree and clean/landed admission rules for native asynchronous Codex worktree creation.",
+    "scope": "Extend the canonical guard in the existing hooks checkout and PR #63 branch. Match native create and status tools, canonicalize sourceRoot, preserve an invocation reservation through asynchronous completion, and update exact tests and documentation.",
+    "non_goals": [
+      "Do not change the cap, create or remove worktrees, merge branches, or touch live trading systems.",
+      "Do not claim coverage for external Git clients, arbitrary subprocesses, or host tools without callbacks.",
+      "Do not expire reservations by TTL or release them on missing or ambiguous evidence."
+    ],
+    "canonical_names": {
+      "native_create_tool": "mcp__codex_app__create_worktree",
+      "native_status_tool": "mcp__codex_app__get_worktree_creation_status",
+      "cap": "CAP=5",
+      "state_record": "worktree-cap.lock/owner.json"
+    },
+    "system_boundaries": [
+      {
+        "boundary": "Codex app native worktree lifecycle",
+        "integration_point": "Codex PreToolUse/PostToolUse hooks with tool_name, tool_input, tool_use_id and tool_response."
+      },
+      {
+        "boundary": "Git repository inventory",
+        "integration_point": "Canonical Git common directory and git worktree list --porcelain."
+      }
+    ],
+    "steps": [
+      {
+        "step_number": 1,
+        "action": "Read the native hook payload and validate exact tool name, tool_use_id, sourceRoot, repository identity, current worktree inventory, owner-intent token, and admission rules.",
+        "owner": "Implementer",
+        "deliverable": "Fail-closed native create preflight with canonical repository binding."
+      },
+      {
+        "step_number": 2,
+        "action": "Persist the admitted invocation reservation; bind returned operationId and release only on exact matching completed/failed status. Verify a completed worktree appears in Git inventory before release.",
+        "owner": "Implementer",
+        "deliverable": "Race-safe asynchronous reservation lifecycle and guarded recovery."
+      },
+      {
+        "step_number": 3,
+        "action": "Add callback fixtures, concurrency and mismatch tests, installer registration tests, and documented coverage/recovery limits.",
+        "owner": "Implementer",
+        "deliverable": "Focused regression suite and operator documentation."
+      },
+      {
+        "step_number": 4,
+        "action": "Obtain independent source review, then run focused test and installer validation; update PR #63 and issue coordination with exact evidence.",
+        "owner": "Orchestrator",
+        "deliverable": "Reviewed, verified patch ready for normal merge gates."
+      }
+    ]
+  },
+  "acceptance_criteria": [
+    {
+      "criterion": "Native Codex create_worktree is matched in PreToolUse and runs the same five-tree, clean/landed, owner-intent and fail-closed repository admission checks as other covered creation paths.",
+      "testable": true,
+      "verification_method": "Fixture callback tests at cap boundary, dirty/unlanded and malformed repository inputs."
+    },
+    {
+      "criterion": "Every admitted asynchronous create is bound to canonical repository identity and exact tool_use_id; returned operationId is persisted and the reservation stays held across PostToolUse when the tool returns pending.",
+      "testable": true,
+      "verification_method": "Lifecycle tests for immediate terminal result, pending operationId, mismatched invocation and missing response."
+    },
+    {
+      "criterion": "Only a matching completed/failed status releases a reservation; completed status also requires the created worktree to be visible in Git inventory. Manual recovery requires exact sourceRoot, create tool_use_id, operationId and saved terminal response, including when the operation index is absent.",
+      "testable": true,
+      "verification_method": "Status callback tests for success, failure, mismatch, unknown, nonterminal, and absent inventory evidence."
+    },
+    {
+      "criterion": "Installer tests register exact create/status hooks while preserving unrelated matcher groups and trust settings.",
+      "testable": true,
+      "verification_method": "Temporary Codex hooks configuration integration test."
+    },
+    {
+      "criterion": "Documentation explains native asynchronous coverage, fail-closed conditions, guarded manual recovery and unsupported paths.",
+      "testable": true,
+      "verification_method": "Review README against acceptance checklist."
+    }
+  ],
+  "testing_plan": {
+    "unit": [
+      "Fixture tests for callback parsing, canonical repository identity, admission, reservation persistence, ID binding, terminal release and audit contents."
+    ],
+    "integration": [
+      "Install into a temporary Codex hooks.json fixture and confirm create/status registration preserves unrelated hook entries and trust settings."
+    ],
+    "e2e": [
+      "Do not create a real worktree; exercise documented callback fixtures and temporary Git repositories."
+    ],
+    "negative": [
+      "Reject malformed/ambiguous sourceRoot, cap reached, dirty/unlanded inventory, missing token, duplicate/mismatched IDs, unknown/nonterminal status, and missing successful inventory readback."
+    ],
+    "regression": [
+      "Run existing cap scratch-repository tests and installer tests; confirm Claude, shell and Codex Agent paths retain behavior."
+    ]
+  },
+  "security_review": {
+    "risks": [
+      "Untrusted callback fields could release another repository or operation reservation.",
+      "An incomplete callback could release the lock before the async worktree exists.",
+      "Audit data could expose prompts or credentials if payloads are logged wholesale."
+    ],
+    "controls": [
+      "Bind each reservation to canonical Git common dir, exact tool_use_id and returned operationId.",
+      "Keep uncertain reservations fail-closed; release only on exact terminal status and verify inventory for completed operations.",
+      "Store only hashed repository/operation identifiers and status metadata; never log prompts or secrets."
+    ],
+    "secrets_handling": "Do not read, persist or log secrets; callback logs contain only allowlisted metadata.",
+    "auth_requirements": "Use the existing short-lived owner-intent token; do not claim native tool payloads prove human identity.",
+    "least_privilege": "Hook reads repository metadata and writes only its own lock and audit state."
+  },
+  "compliance_review": {
+    "applicable_frameworks": [
+      "N/A"
+    ],
+    "requirements": [
+      "Local development workflow guard; no regulated data processing."
+    ],
+    "audit_trail": "Reservation lifecycle records timestamp, hashed repository and operation IDs, terminal status, and recovery reason."
+  },
+  "edge_cases": [
+    {
+      "case": "Four registered worktrees and a native create request",
+      "expected_behavior": "Proceed only if all other admission checks pass and lock is acquired."
+    },
+    {
+      "case": "Five or more worktrees, dirty/unlanded checkout, or unavailable remote",
+      "expected_behavior": "Refuse before native creation and state the concrete reason."
+    },
+    {
+      "case": "sourceRoot omitted or malformed and cwd cannot identify one Git repository",
+      "expected_behavior": "Fail closed without consuming an unrelated repository token."
+    },
+    {
+      "case": "Native create returns operationId and PostToolUse fires before operation completion",
+      "expected_behavior": "Keep the matching reservation until status becomes terminal."
+    },
+    {
+      "case": "Status callback is mismatched, unknown, or nonterminal",
+      "expected_behavior": "Keep reservation; require evidence-based recovery."
+    },
+    {
+      "case": "Completed status reports success but Git inventory lacks the worktree",
+      "expected_behavior": "Keep reservation and report the inconsistency."
+    }
+  ],
+  "failure_modes": [
+    {
+      "failure": "Cannot resolve sourceRoot/cwd to one canonical repository.",
+      "degradation": "Native creation is denied.",
+      "recovery": "Call with an absolute valid sourceRoot for the intended checkout."
+    },
+    {
+      "failure": "Cap or clean/landed admission check fails.",
+      "degradation": "Native creation is denied with the blocking checkout path.",
+      "recovery": "Resolve the existing worktree state through the repository release process, then retry."
+    },
+    {
+      "failure": "Operation ID or matching terminal status is missing.",
+      "degradation": "Reservation remains held and later creates are denied for that repository.",
+      "recovery": "Supply exact saved terminal status evidence through guarded recovery; do not clear by age."
+    },
+    {
+      "failure": "Completed status cannot be confirmed in Git inventory.",
+      "degradation": "Reservation remains held.",
+      "recovery": "Reconcile the app operation with git worktree list and use exact operation-bound recovery."
+    }
+  ],
+  "observability": {
+    "logs": [
+      "Record reservation created/bound/released and recovery events using hashed repository and operation IDs."
+    ],
+    "metrics": [],
+    "alerts": [],
+    "traces": [],
+    "error_messages": [
+      "Worktree creation denied: repository identity is ambiguous.",
+      "Worktree creation denied: five-worktree or clean/landed admission check failed.",
+      "Worktree reservation retained: matching terminal operation evidence is unavailable."
+    ]
+  },
+  "deployment": {
+    "steps": [
+      "Run code review before tests per repository contract.",
+      "Run focused hook and installer checks on the exact branch head.",
+      "Merge only through the repository-required exact-head gates.",
+      "Install from canonical source with the official installer, then read back hook registration and exercise a non-creating callback fixture."
+    ],
+    "rollback": [
+      "Restore the previous canonical hook source through a reviewed revert.",
+      "Run the canonical installer to restore prior registrations and confirm readback."
+    ],
+    "backward_compatibility": "Existing tool matchers and state records remain supported; native operation records are versioned and fail closed when unknown."
+  },
+  "definition_of_done": [
+    "Exact create and status hooks are installed by the canonical installer and preserve existing registrations.",
+    "Regression tests prove admission and reservation lifecycle including async and failure paths.",
+    "README documents supported boundaries and recovery.",
+    "Independent review, audit, CI and exact-head merge gates pass."
+  ],
+  "documentation": {
+    "updates_needed": [
+      "Update worktree-cap README coverage and async reservation/recovery behavior.",
+      "Update the canonical issue acceptance record with the newly covered native path."
+    ],
+    "changelog_entry": "Add guarded coverage for Codex native asynchronous worktree creation.",
+    "ticket_notes": "Keep the repository limit at five total registered worktrees."
+  },
+  "improvements": {
+    "docs_to_update": [
+      "worktree-cap/README.md"
+    ],
+    "proposed_ci_checks": [
+      "Add drift test for exact native create/status hook registration.",
+      "Add callback tests proving mismatch and nonterminal status cannot release reservations."
+    ],
+    "agents_md_additions": [
+      "Native async worktree reservations stay held until exact matching terminal evidence and Git inventory readback are verified."
+    ]
+  }
+}
