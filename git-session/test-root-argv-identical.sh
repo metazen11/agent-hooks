@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 # Issue #36 AC3: at a TRUE repo root the git argv sequence of the hook is
-# byte-identical to the baseline (origin/main) hook. A PATH shim logs every git
+# byte-identical to the baseline hook. A PATH shim logs every git
 # call; SessionStart, 2x PreEdit, SessionEnd (squash), SessionEnd (commit) and a
 # squash whose commit is forced to fail are run with both hooks and the
 # normalised traces are diffed.
-#   BASELINE=<path to baseline git-session.js> overrides `git show origin/main:`.
+#   BASELINE=<path> or BASELINE_REF=<commit> identifies the baseline explicitly.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 NEW="$HERE/git-session.js"
 W0="$(mktemp -d -t agent-hooks-argv-XXXXXX)"; W0="$(cd "$W0" && pwd -P)"
 trap 'find "$W0" -delete' EXIT
 BASE="${BASELINE:-$W0/baseline.js}"
-[[ -n "${BASELINE:-}" ]] || git -C "$HERE" show origin/main:git-session/git-session.js >"$BASE"
+if [[ -n "${BASELINE:-}" ]]; then
+    cp "$BASELINE" "$BASE"
+else
+    : "${BASELINE_REF:?set BASELINE or BASELINE_REF to an explicit baseline}"
+    git -C "$HERE" show "$BASELINE_REF:git-session/git-session.js" >"$BASE"
+fi
 mkdir "$W0/shim"
 cat >"$W0/shim/git" <<'SH'
 #!/bin/bash

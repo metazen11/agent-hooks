@@ -50,6 +50,20 @@ echo a3 >"$d/a/f.txt"
 edit "$d/a" "$d"
 [[ "$(git -C "$d" show --name-only --format= HEAD)" == "a/f.txt" ]] && ok "checkpoint contains only a/" || bad "checkpoint files: $(git -C "$d" show --name-only --format= HEAD)"
 
+echo "Case B2: published-branch snapshot excludes staged sibling paths"
+d="$(mkrepo)"
+git -C "$d" update-ref refs/remotes/origin/work/test HEAD
+git -C "$d" config branch.work/test.remote origin
+git -C "$d" config branch.work/test.merge refs/heads/work/test
+echo sibling >"$d/b/staged.txt"; git -C "$d" add b/staged.txt
+index_before="$(git -C "$d" write-tree)"
+echo a3 >"$d/a/f.txt"
+printf '{"cwd":"%s/a","tool_name":"Edit","tool_input":{"file_path":"%s/a/f.txt"}}' "$d" "$d" | node "$HOOK" --pre-edit >/dev/null
+checkpoint="refs/checkpoints/work/test"
+git -C "$d" cat-file -e "$checkpoint:b/staged.txt" 2>/dev/null && bad "staged sibling leaked into published snapshot" || ok "published snapshot excludes staged sibling"
+[[ "$(git -C "$d" write-tree)" == "$index_before" ]] && ok "real index remains unchanged" || bad "real index changed"
+[[ "$(git -C "$d" show "$checkpoint:a/f.txt")" == a3 ]] && ok "session subtree change is checkpointed" || bad "session subtree change missing"
+
 echo "Case C: true repo root unchanged (everything in scope)"
 d="$(mkrepo)"; echo a3 >"$d/a/f.txt"; echo b3 >"$d/b/f.txt"
 out="$(run --session-start "$d")"

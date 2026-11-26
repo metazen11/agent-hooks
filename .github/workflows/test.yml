@@ -9,8 +9,12 @@ on:
 jobs:
   hooks:
     runs-on: ubuntu-latest
+    env:
+      BASELINE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Node is pre-installed on ubuntu-latest; we pin a version anyway for
       # reproducibility. Hooks use only Node built-ins (fs, path, os,

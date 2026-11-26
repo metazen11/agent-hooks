@@ -228,8 +228,9 @@ function snapshot(dir, branch, message) {
     const gitPath = (p) => path.resolve(dir, git(['rev-parse', '--git-path', p], dir).output);
     const tmpIndex = gitPath(`checkpoint-index-${process.pid}`);
     try {
-        try { fs.copyFileSync(gitPath('index'), tmpIndex); } catch (e) { /* fresh repo: empty index */ }
         const env = { GIT_INDEX_FILE: tmpIndex };
+        const seeded = git(['read-tree', 'HEAD'], dir, { env });
+        if (!seeded.success) return { success: false, output: 'side-ref snapshot index initialization failed' };
         const add = git(['add', '-A', '--', ...runtimePathspec(dir)], dir, { env });
         const tree = add.success && git(['write-tree'], dir, { env });
         const commit = tree && tree.success && git(['commit-tree', tree.output, '-p', 'HEAD', '-F', '-'], dir, { input: message });
